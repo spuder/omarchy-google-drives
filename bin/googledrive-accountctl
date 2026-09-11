@@ -19,6 +19,28 @@ credentials because Proton's rclone backend does its own SRP login. That's
 also why there's no --json/stdin form here: nothing sensitive ever needs to
 reach this script directly, Google's own consent screen handles it.
 
+The account label you're asked for is your Google email, not an invented
+short id — but the email itself never becomes the systemd instance name,
+rclone remote name, or directory name directly. `@`/`.` in those contexts
+reads badly (two `@`s in "omarchy-google-drive-mount@alice@gmail.com" is
+genuinely ambiguous about which one is the systemd template separator) and
+exposes the full address in `systemctl`/`journalctl` output for no benefit.
+`slugify_email` takes the part before '@' instead (alice@gmail.com ->
+alice); the email itself is kept as the human-readable displayName shown
+in the panel and used for the mount folder name, where `@`/`.` are
+perfectly normal filename characters. Two accounts that happen to share a
+local part (alice@gmail.com and alice@work.com) don't collide on id —
+`unique_id` appends -2, -3, ... rather than baking the domain into every
+id just to guard against a case that's rare in practice.
+
+Once sign-in verifies, `add` enables and starts the mount unit itself and
+fires a desktop notification — deliberately not just printing instructions
+and leaving the terminal window to be found again. Google's own OAuth
+consent screen takes over the whole browser window, and coming back to a
+small floating terminal afterward to read and copy a systemctl command by
+hand was real, reported friction; nothing about the rest of setup needs a
+human in the loop, so it isn't left as a manual step.
+
 Every write to accounts.json goes through atomic_write_accounts: write to a
 sibling temp file, then os.replace over the target, and refuse a target
 that is a symlink first, matching the defensive pattern used throughout
@@ -39,6 +61,7 @@ ACCOUNTS_FILE = STATE_HOME / "accounts.json"
 MOUNT_ROOT = Path.home() / "GoogleDrive"
 UNIT_TEMPLATE = "omarchy-google-drive-mount@{id}.service"
 VALID_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def fail(message):
@@ -86,10 +109,53 @@ def find_account(accounts, account_id):
     return None
 
 
+def slugify_email(email):
+    """alice@gmail.com -> alice. Just the part before '@', sanitized to
+    the id-safe charset — collisions between accounts that share a local
+    part are handled separately by unique_id(), not by baking the domain
+    into every id."""
+    local_part = email.strip().lower().split("@", 1)[0]
+    slug = re.sub(r"[^a-z0-9]+", "-", local_part).strip("-")
+    if not slug:
+        slug = "account"
+    if not slug[0].isalnum():
+        slug = "a" + slug
+    return slug[:64]
+
+
+def unique_id(base, accounts):
+    """Append -2, -3, ... if base is already taken — collisions are
+    possible in principle (two real emails slugifying the same isn't
+    realistic, but this keeps `add` from ever failing on it)."""
+    existing = {a.get("id") for a in accounts}
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base}-{n}" in existing:
+        n += 1
+    return f"{base}-{n}"
+
+
+def notify(summary, body="", urgency="normal"):
+    """Best-effort desktop notification — so finishing sign-in doesn't
+    require going back to find the floating terminal window (which Google's
+    own OAuth consent screen, taking over the browser, tends to bury).
+    Silently does nothing if notify-send isn't available; never raises."""
+    if not shutil.which("notify-send"):
+        return
+    try:
+        subprocess.run(
+            ["notify-send", "--app-name=Google Drives", f"--urgency={urgency}", summary, body],
+            check=False, timeout=3, capture_output=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def cmd_list(args):
     accounts = load_accounts()
     if not accounts:
-        print("No accounts configured. Add one with: googledrive-accountctl add <id> [display name]")
+        print("No accounts configured. Add one with: googledrive-accountctl add <email>")
         return
     for entry in accounts:
         print(f"{entry.get('id')}\t{entry.get('displayName')}\t{entry.get('mountPath')}")
@@ -111,16 +177,18 @@ def _require_rclone():
 def cmd_add(args):
     rclone = _require_rclone()  # fail before asking anything, not after
 
-    account_id = (args.id or prompt("Account id, e.g. personal or work")).strip().lower()
-    if not VALID_ID.match(account_id):
-        fail("id must be lowercase letters, digits, and hyphens, starting with a letter or digit")
+    email = (args.email or prompt("Google account email, e.g. alice@gmail.com")).strip()
+    if not EMAIL_RE.match(email):
+        fail("that doesn't look like an email address")
+    display_name = email
 
     accounts = load_accounts()
+    default_id = slugify_email(email)
+    account_id = (args.id or unique_id(default_id, accounts)).strip().lower()
+    if not VALID_ID.match(account_id):
+        fail("--id must be lowercase letters, digits, and hyphens, starting with a letter or digit")
     if find_account(accounts, account_id):
         fail(f"account '{account_id}' already exists — remove it first: googledrive-accountctl remove {account_id}")
-
-    default_name = account_id.replace("-", " ").title()
-    display_name = args.display_name or prompt("Display name", default_name)
 
     account_dir = STATE_HOME / account_id
     ensure_private_dir(account_dir)
@@ -129,10 +197,10 @@ def cmd_add(args):
     config_path = account_dir / "rclone.conf"
 
     print()
-    print(f"Signing in to Google Drive for '{account_id}' ({display_name}).")
+    print(f"Signing in to Google Drive as {email}.")
     print("This is rclone's own browser sign-in — a browser window will open (or a")
-    print("link will be printed below to open yourself) asking you to choose a Google")
-    print("account and approve access. Nothing is typed into this terminal.")
+    print("link will be printed below to open yourself) asking you to approve access")
+    print("for this Google account. Nothing is typed into this terminal.")
     print()
 
     # rclone's own interactive OAuth flow — deliberately NOT run with
@@ -149,6 +217,7 @@ def cmd_add(args):
     )
     if create_result.returncode != 0:
         shutil.rmtree(account_dir, ignore_errors=True)
+        notify("Google Drive sign-in failed", email, urgency="critical")
         fail("Google sign-in was not completed — nothing was saved")
 
     print()
@@ -160,6 +229,7 @@ def cmd_add(args):
     if about.returncode != 0:
         shutil.rmtree(account_dir, ignore_errors=True)
         detail = (about.stderr or about.stdout or "").strip()
+        notify("Google Drive sign-in failed", email, urgency="critical")
         fail(f"sign-in did not verify, nothing was saved. rclone said:\n  {detail or 'unknown error'}")
 
     accounts.append({
@@ -177,10 +247,22 @@ def cmd_add(args):
         handle.write(f"GOOGLEDRIVE_CONFIG={config_path}\n")
     os.chmod(env_path, 0o600)
 
+    # Nothing left for the browser-buried terminal to hand back to a human
+    # for — start it now rather than printing a command to copy later.
     unit = UNIT_TEMPLATE.format(id=account_id)
     print()
-    print("Signed in and verified. Start it with:")
-    print(f"  systemctl --user enable --now {unit}")
+    print(f"Signed in and verified. Mounting at {mount_path} ...")
+    mount_result = subprocess.run(["systemctl", "--user", "enable", "--now", unit])
+    if mount_result.returncode == 0:
+        print("Done.")
+        notify("Google Drive connected", f"{email} is mounted at {mount_path}")
+    else:
+        # Account is saved either way — the mount just didn't start. Not a
+        # fail(): the sign-in itself succeeded and shouldn't be rolled back
+        # over a systemd hiccup.
+        print(f"Signed in, but the mount unit didn't start — check with:")
+        print(f"  systemctl --user status {unit}")
+        notify("Google Drive signed in, mount failed to start", email, urgency="critical")
 
 
 def cmd_remove(args):
@@ -229,8 +311,8 @@ def main():
     p_list.set_defaults(func=cmd_list)
 
     p_add = sub.add_parser("add", help="add and sign in to a new account")
-    p_add.add_argument("id", nargs="?", default=None, help="short id, e.g. personal (prompted for if omitted)")
-    p_add.add_argument("display_name", nargs="?", default=None, help="display name, e.g. \"Personal\" (prompted for if omitted)")
+    p_add.add_argument("email", nargs="?", default=None, help="Google account email, e.g. alice@gmail.com (prompted for if omitted)")
+    p_add.add_argument("--id", dest="id", default=None, help="override the auto-generated id (default: derived from the email, e.g. alice-at-gmail-com)")
     p_add.set_defaults(func=cmd_add)
 
     p_remove = sub.add_parser("remove", help="stop and forget an account (keeps local files)")

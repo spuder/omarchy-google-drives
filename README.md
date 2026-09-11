@@ -17,12 +17,17 @@ The first line clones and enables the widget; the second installs rclone,
 fuse3, and the helper scripts it needs. No manual `git clone` required.
 
 Click "Add a Google Drive account" in the panel. That opens a terminal
-running rclone's own browser sign-in — pick a Google account, approve
-access, done. This plugin never sees your Google password: there's no
-in-panel credential form at all, because Drive's OAuth hand-off means
-there's nothing for one to collect. Add as many accounts as you like; each
-shows up as its own row, and each is a separate trip through Google's
-account chooser, so you can pick a different account every time.
+asking for the account's email, then hands off to rclone's own browser
+sign-in — approve access for that Google account and you're done. This
+plugin never sees your Google password: there's no in-panel credential
+form at all, because Drive's OAuth hand-off means there's nothing for one
+to collect. Once sign-in verifies, the account mounts itself automatically
+and a desktop notification confirms it — nothing to come back and copy
+from the terminal by hand, which matters since Google's consent screen
+takes over the whole browser window and getting back to a small floating
+terminal afterward is real friction. Add as many accounts as you like;
+each shows up as its own row, and each is a separate trip through Google's
+account chooser, so you can sign in with a different account every time.
 
 Remove with `~/.config/omarchy/plugins/spencerowen.googledrive/uninstall.sh`
 (your signed-in accounts and mounted files are left alone; see the script
@@ -121,14 +126,19 @@ Everything the panel does is also a plain command:
 
 ```sh
 googledrive-accountctl list
-googledrive-accountctl add work "Work"        # opens rclone's browser sign-in
-googledrive-accountctl pause work              # unmount
-googledrive-accountctl resume work             # mount again
-googledrive-accountctl remove work             # forget the account (keeps local files)
+googledrive-accountctl add alice@gmail.com     # opens rclone's browser sign-in, then mounts
+googledrive-accountctl pause alice              # unmount
+googledrive-accountctl resume alice             # mount again
+googledrive-accountctl remove alice             # forget the account (keeps local files)
 
-systemctl --user status omarchy-google-drive-mount@work.service
-journalctl --user -u omarchy-google-drive-mount@work.service -f
+systemctl --user status omarchy-google-drive-mount@alice.service
+journalctl --user -u omarchy-google-drive-mount@alice.service -f
 ```
+
+The id (`alice` above) is derived from the part of the email before `@`,
+sanitized and de-duplicated automatically — `googledrive-accountctl list`
+shows you the id it actually picked. Override it with `--id` on `add` if
+you want something else.
 
 ## Comparison
 

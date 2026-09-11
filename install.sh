@@ -34,10 +34,9 @@ Installed. Click the new "G" icon in the bar and choose "Add a Google Drive
 account" to open a sign-in terminal (Google's own browser OAuth — nothing
 is typed into this plugin), or from a terminal:
 
-  googledrive-accountctl add personal "Personal"
+  googledrive-accountctl add alice@gmail.com
 
-Either way, once signed in, mount it with:
-
-  systemctl --user enable --now omarchy-google-drive-mount@personal.service
+Either way, it mounts itself automatically as soon as sign-in verifies —
+no extra command to run.
 
 MSG

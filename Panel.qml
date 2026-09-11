@@ -308,7 +308,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           Layout.fillWidth: true
-          text: "Opens a terminal for Google's own browser sign-in — nothing typed here"
+          text: "Opens a terminal for your email, then Google's own browser sign-in"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

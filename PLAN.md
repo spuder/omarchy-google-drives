@@ -162,6 +162,44 @@ Dropbox do:
   browser round trip — Google's own account chooser, not something this
   plugin has to arbitrate.
 
+### Sign-in UX: email as the label, auto-start, no manual finish step
+
+`add` asks for the account's email rather than an invented short id — a
+person naturally thinks of "my work Google account" as an email address,
+not a slug they have to make up on the spot. That email becomes the
+displayName shown in the panel and the mount folder name (`@`/`.` are
+ordinary filename characters, no issue there). It deliberately does **not**
+become the id used for the rclone remote name, the systemd instance, or
+the state directory: `omarchy-google-drive-mount@alice@gmail.com.service`
+reads badly — two `@`s, genuinely ambiguous which one is systemd's own
+template separator — and would put the full address in `systemctl`/
+`journalctl` output for no benefit. `slugify_email` takes just the part
+before `@` (sanitized to the id-safe charset); `unique_id` appends `-2`,
+`-3`, ... in the rare case two accounts share a local part
+(`alice@gmail.com` and `alice@work.com` would otherwise collide).
+
+Once sign-in verifies, `add` runs `systemctl --user enable --now` itself
+and fires a desktop notification, rather than printing a command and
+leaving the terminal to be found again. This was reported friction, not a
+guess: Google's OAuth consent screen takes over the whole browser window,
+and coming back afterward to a small floating terminal just to read and
+copy a systemctl invocation by hand is exactly the kind of "hard to get
+back to finish setup" complaint a plugin should not have. There's no
+manual step left after approving in the browser — if the mount unit fails
+to start, the account is still saved (not rolled back over a systemd
+hiccup) and the notification says to check `systemctl --user status`
+instead.
+
+Considered and not built: removing the terminal entirely by driving
+rclone's OAuth flow over its `rc` HTTP API instead of the blocking CLI
+(the technique edbron/omarchy-cloud-drives already uses for its own iCloud
+sign-in — a private unix socket + `rclone rcd`), so the panel could show
+"Sign in with Google" as a button instead of opening a terminal at all.
+Real and buildable, just more code (an RC client + state-machine walking)
+for a gain that's smaller once the terminal auto-completes and gets out of
+the way on its own — revisit if the terminal itself, not just the
+afterward-friction, turns out to bother people.
+
 ## Roadmap
 
 **Phase 1 — this repo.** Manifest + bar/panel plugin, account CLI, systemd
