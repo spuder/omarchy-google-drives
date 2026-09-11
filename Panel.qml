@@ -21,6 +21,12 @@ Panel {
   property string focusSection: "add"
   property int accountIndex: 0
   property bool cursorActive: false
+  // Id of the account whose remove button/key was just pressed once. A
+  // second press within confirmRemoveTimer's window actually removes it;
+  // anything else (timeout, closing the panel) drops back to unarmed. Kept
+  // here rather than as local state on the (Repeater-recreated) AccountRow
+  // delegate so it survives a status refresh mid-confirm.
+  property string confirmRemoveId: ""
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -79,13 +85,37 @@ Panel {
     accountIndex = index
   }
 
+  // First call arms removal for this account (and starts the timeout that
+  // disarms it again); a second call while already armed for the same
+  // account actually removes it. Shared by the row's remove button and the
+  // 'd' key so both go through the same confirm step.
+  function attemptRemove(account) {
+    if (!account) return
+    if (root.confirmRemoveId === account.id) {
+      root.confirmRemoveId = ""
+      confirmRemoveTimer.stop()
+      gdrive.removeAccount(account.id)
+    } else {
+      root.confirmRemoveId = account.id
+      confirmRemoveTimer.restart()
+    }
+  }
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
   onOpenedChanged: if (opened) {
     cursorActive = false
+    confirmRemoveId = ""
     gdrive.refresh()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  Timer {
+    id: confirmRemoveTimer
+    interval: 3000
+    repeat: false
+    onTriggered: root.confirmRemoveId = ""
   }
 
   Service {
@@ -156,6 +186,7 @@ Panel {
           var account = root.selectedAccount()
           if (account) gdrive.openMountFolder(account)
         }
+        else if (t === "d" || t === "D") root.attemptRemove(root.selectedAccount())
       }
 
       Flickable {
@@ -234,7 +265,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "Click, or press o, to open the selected account's folder"
+              text: "Click a drive, or select it and press o, to open its folder. Press d twice to remove one."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -331,6 +362,7 @@ Panel {
     property var account: null
     property int rowIndex: 0
     readonly property bool active: account ? gdrive.displayActive(account) : false
+    readonly property bool confirmingRemove: account ? root.confirmRemoveId === account.id : false
     // Purple (theme accent) while mounted, white (foreground) paused, red
     // (urgent) errored — accent specifically, not plain foreground, so
     // "mounted and live" reads as the theme's brand color rather than
@@ -386,15 +418,24 @@ Panel {
         Text {
           textFormat: Text.PlainText
           Layout.fillWidth: true
-          text: accountRow.account
-            ? (accountRow.account.lastError !== "" ? accountRow.account.lastError
+          text: !accountRow.account ? ""
+            : accountRow.confirmingRemove ? "Click ✕ again, or press d again, to remove — local files are kept"
+            : (accountRow.account.lastError !== "" ? accountRow.account.lastError
               : Model.usageText(accountRow.account.usedBytes, accountRow.account.quotaBytes, accountRow.account.quotaKnown))
-            : ""
-          color: accountRow.account && accountRow.account.lastError !== "" ? root.urgent : root.dim
+          color: accountRow.confirmingRemove ? root.urgent
+            : (accountRow.account && accountRow.account.lastError !== "" ? root.urgent : root.dim)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
+      }
+
+      PanelActionButton {
+        iconText: "✕"
+        foreground: accountRow.confirmingRemove ? root.urgent : root.foreground
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: root.attemptRemove(accountRow.account)
       }
 
       ToggleSwitch {

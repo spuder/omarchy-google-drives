@@ -102,6 +102,16 @@ Item {
     runControl([desired ? "resume" : "pause", id])
   }
 
+  // Unmounts and forgets the account (googledrive-accountctl remove keeps
+  // its local mount folder and rclone config on disk — see the CLI's own
+  // messaging — this only removes it from the panel and stops syncing).
+  // Confirmation lives in Panel.qml (a second click/keypress within a few
+  // seconds), not here — this function fires the moment it's called.
+  function removeAccount(id) {
+    if (controlProcess.running) return
+    runControl(["remove", id])
+  }
+
   // Deliberately not hardcoded to a specific file manager — Omarchy is not
   // tied to one desktop environment, so there's no single "the" file
   // manager to assume the way macOS can assume Finder. `xdg-open` resolves
