@@ -6,38 +6,6 @@ A bar widget for [Omarchy](https://omarchy.org/) that turns Google Drive into
 required — with local disk usage bounded to a fixed cap no matter how large
 the Drive account actually is.
 
-## Why this one
-
-Google has never shipped an official Google Drive **sync** client for
-Linux — [Google Drive for desktop](https://support.google.com/a/answer/7491144)
-is Windows/macOS only, and there is no official Drive CLI with a sync or
-mount command. So, like the other rclone-based Omarchy plugins,
-[rclone](https://rclone.org/drive/)'s Google Drive backend does the actual
-transfer and OAuth here — nothing custom.
-
-- **Bounded disk usage, regardless of Drive size.** This is a real `rclone
-  mount` (FUSE) with a capped local cache (`--vfs-cache-max-size`, default
-  20 GB), not a full local copy. A 2 TB Drive account works fine on a
-  200 GB disk: content fetches on demand, recently-used files stay cached
-  for offline access, and least-used cached files are evicted once the cap
-  is hit. See [PLAN.md](PLAN.md) for why this plugin deliberately does
-  *not* use `rclone bisync` for this — bisync has no way to bound local
-  disk usage, so it can't safely handle a Drive account bigger than free
-  local disk.
-- **Multiple accounts, at once.** Personal, work, whatever else: each
-  gets its own row in the panel, its own folder, its own pause/resume
-  toggle, all signed in and mounted simultaneously — with a separate,
-  isolated rclone config per account so one expired token can't touch
-  another.
-- **Works with whatever file manager you actually run.** Omarchy isn't
-  tied to one desktop environment, so there's no single "the" file manager
-  the way macOS has Finder. The mount itself needs no integration at all —
-  it's a real directory, browsable in Nautilus, Dolphin, Thunar, Nemo, or
-  anything else exactly like any other folder. The panel's "open folder"
-  action uses `xdg-open`, which resolves to whatever your session has
-  actually registered as its default folder handler, rather than assuming
-  one.
-
 ## Install
 
 ```bash
@@ -69,6 +37,38 @@ and pass it to `rclone config create` (or `rclone config reconnect <id>:`
 to update an existing account). This plugin doesn't ship or reuse a shared
 client ID, and never reads the client ID, secret, or token directly —
 rclone owns that configuration.
+
+## Why this one
+
+Google has never shipped an official Google Drive **sync** client for
+Linux — [Google Drive for desktop](https://support.google.com/a/answer/7491144)
+is Windows/macOS only, and there is no official Drive CLI with a sync or
+mount command. So, like the other rclone-based Omarchy plugins,
+[rclone](https://rclone.org/drive/)'s Google Drive backend does the actual
+transfer and OAuth here — nothing custom.
+
+- **Bounded disk usage, regardless of Drive size.** This is a real `rclone
+  mount` (FUSE) with a capped local cache (`--vfs-cache-max-size`, default
+  20 GB), not a full local copy. A 2 TB Drive account works fine on a
+  200 GB disk: content fetches on demand, recently-used files stay cached
+  for offline access, and least-used cached files are evicted once the cap
+  is hit. See [PLAN.md](PLAN.md) for why this plugin deliberately does
+  *not* use `rclone bisync` for this — bisync has no way to bound local
+  disk usage, so it can't safely handle a Drive account bigger than free
+  local disk.
+- **Multiple accounts, at once.** Personal, work, whatever else: each
+  gets its own row in the panel, its own folder, its own pause/resume
+  toggle, all signed in and mounted simultaneously — with a separate,
+  isolated rclone config per account so one expired token can't touch
+  another.
+- **Works with whatever file manager you actually run.** Omarchy isn't
+  tied to one desktop environment, so there's no single "the" file manager
+  the way macOS has Finder. The mount itself needs no integration at all —
+  it's a real directory, browsable in Nautilus, Dolphin, Thunar, Nemo, or
+  anything else exactly like any other folder. The panel's "open folder"
+  action uses `xdg-open`, which resolves to whatever your session has
+  actually registered as its default folder handler, rather than assuming
+  one.
 
 ## How the mount works, and its limits
 
