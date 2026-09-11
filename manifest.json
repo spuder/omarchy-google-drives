@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "Spencer Owen",
   "license": "MIT",
-  "description": "Real two-way sync for multiple Google Drive accounts: bar status, storage usage, and pause/resume, backed by rclone bisync.",
+  "description": "Native Google Drive mounts for multiple accounts, with disk usage bounded by a local cache: bar status, storage usage, and pause/resume.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Google Drives",
-    "description": "Sign in to one or more Google Drive accounts, see two-way sync status and storage per account, and pause or resume syncing.",
+    "description": "Sign in to one or more Google Drive accounts, see mount status and storage per account, and pause or resume mounting.",
     "category": "Files",
     "aliases": [
       "googledrive",
@@ -28,7 +28,7 @@
     "defaultSection": "right",
     "defaults": {
       "refreshIntervalSec": 30,
-      "syncRoot": "~/GoogleDrive",
+      "mountRoot": "~/GoogleDrive",
       "showQuota": true
     },
     "schema": [
@@ -42,11 +42,11 @@
         "defaultValue": 30
       },
       {
-        "key": "syncRoot",
+        "key": "mountRoot",
         "type": "string",
-        "label": "Sync root",
+        "label": "Mount root",
         "defaultValue": "~/GoogleDrive",
-        "description": "Parent directory holding one two-way-synced folder per account, e.g. ~/GoogleDrive/Personal."
+        "description": "Parent directory holding one mount folder per account, e.g. ~/GoogleDrive/Personal."
       },
       {
         "key": "showQuota",

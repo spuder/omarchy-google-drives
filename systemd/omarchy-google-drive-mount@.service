@@ -1,0 +1,20 @@
+[Unit]
+Description=Google Drive mount (%i)
+Documentation=https://github.com/spuder/omarchy-google-drives
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/omarchy-google-drive/%i/env
+ExecStart=%h/.local/bin/googledrive-mount
+ExecStop=/usr/bin/fusermount3 -u ${GOOGLEDRIVE_MOUNTPOINT}
+Restart=on-failure
+RestartSec=5
+# rclone's own retry/backoff handles transient Drive API errors; this just
+# stops systemd from respawning into a hard failure loop.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Install]
+WantedBy=default.target

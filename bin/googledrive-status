@@ -6,17 +6,17 @@ Prints one JSON object on stdout, shaped for Model.js's parseAccounts():
     {"ok": true, "rcloneInstalled": bool, "accounts": [...], "lastError": ""}
 
 Each account comes from ~/.config/omarchy-google-drive/accounts.json
-(written by googledrive-accountctl) plus:
-  - whether its systemd *timer* is enabled ("active" — sync scheduled) and
-    whether its *service* is currently running a pass ("running");
-  - the last completed run, from <id>/state/last-run.json (written by
-    googledrive-bisync) — when it finished, whether it succeeded, whether
-    it was a baseline --resync;
-  - storage usage/quota via `rclone about`, cached like the Proton Drive
-    plugin's quota check (CACHE_TTL_SECONDS) so the panel's periodic
-    refresh doesn't hit the Drive API live every ~30s per account. A
-    healthy result is trusted for the TTL; an error always rechecks
-    immediately.
+(written by googledrive-accountctl) plus two checks: whether its systemd
+user unit is active (-> "active" — cheap and local, so this always runs
+fresh), and whether `rclone about` succeeds against its own per-account
+config (-> "authenticated", plus usage/quota when it does).
+
+The `rclone about` check is cached per account (see CACHE_TTL_SECONDS): the
+panel refreshes every ~30s by default, and polling Drive's quota API live
+on every refresh — for every account — isn't something to do by accident.
+A healthy result is trusted for the TTL; an error is always rechecked
+immediately, so a lapsed/expired sign-in doesn't stay hidden behind a stale
+cache. Same pattern as the sister Proton Drive plugin's status script.
 
 Never raises — a missing rclone, a missing config directory, or a hung
 `rclone about` call all degrade to a normal-looking JSON object with the
@@ -36,13 +36,11 @@ from pathlib import Path
 
 STATE_HOME = Path.home() / ".config" / "omarchy-google-drive"
 ACCOUNTS_FILE = STATE_HOME / "accounts.json"
-TIMER_TEMPLATE = "omarchy-google-drive-bisync@{id}.timer"
-SERVICE_TEMPLATE = "omarchy-google-drive-bisync@{id}.service"
+UNIT_TEMPLATE = "omarchy-google-drive-mount@{id}.service"
 CACHE_TTL_SECONDS = 600
 
 
 def demo_payload():
-    now = int(time.time())
     return {
         "ok": True,
         "rcloneInstalled": True,
@@ -51,12 +49,9 @@ def demo_payload():
                 "id": "personal",
                 "displayName": "Personal",
                 "authenticated": True,
-                "timerEnabled": True,
-                "running": False,
-                "syncPath": str(Path.home() / "GoogleDrive" / "Personal"),
-                "lastSyncAt": now - 180,
-                "lastSyncOk": True,
-                "needsResync": False,
+                "active": True,
+                "statusText": "Mounted",
+                "mountPath": str(Path.home() / "GoogleDrive" / "Personal"),
                 "usedBytes": 4_200_000_000,
                 "quotaBytes": 20_000_000_000,
                 "quotaKnown": True,
@@ -66,14 +61,11 @@ def demo_payload():
                 "id": "work",
                 "displayName": "Work",
                 "authenticated": True,
-                "timerEnabled": False,
-                "running": False,
-                "syncPath": str(Path.home() / "GoogleDrive" / "Work"),
-                "lastSyncAt": now - 9000,
-                "lastSyncOk": True,
-                "needsResync": False,
-                "usedBytes": 61_000_000_000,
-                "quotaBytes": 500_000_000_000,
+                "active": False,
+                "statusText": "Paused",
+                "mountPath": str(Path.home() / "GoogleDrive" / "Work"),
+                "usedBytes": 900_000_000_000,
+                "quotaBytes": 2_000_000_000_000,
                 "quotaKnown": True,
                 "lastError": "",
             },
@@ -121,19 +113,10 @@ def config_has_token(config_path):
     return False
 
 
-def unit_state(unit, mode="is-active"):
-    exit_code, _ = command_output(["systemctl", "--user", mode, "--quiet", unit], timeout=3)
+def unit_active(account_id):
+    unit = UNIT_TEMPLATE.format(id=account_id)
+    exit_code, _ = command_output(["systemctl", "--user", "is-active", "--quiet", unit], timeout=3)
     return exit_code == 0
-
-
-def load_last_run(account_id):
-    path = STATE_HOME / account_id / "state" / "last-run.json"
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
 
 
 def cache_path(account_id):
@@ -154,12 +137,12 @@ def save_cache(account_id, data):
     path = cache_path(account_id)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data), encoding="utf-8")
-    tmp.replace(path)
+    tmp.replace(path)  # same directory, so this is an atomic rename
 
 
 def fetch_quota(rclone_path, remote, config_path):
     """One live `rclone about` call. Returns a dict with authenticated/
-    usedBytes/quotaBytes/quotaKnown/lastError — never raises."""
+    usedBytes/quotaBytes/quotaKnown/lastError/statusHint — never raises."""
     exit_code, output = command_output(
         [rclone_path, "about", f"{remote}:", "--config", str(config_path), "--json"],
         timeout=6,
@@ -167,7 +150,7 @@ def fetch_quota(rclone_path, remote, config_path):
     if exit_code != 0:
         return {
             "authenticated": False, "usedBytes": 0, "quotaBytes": 0, "quotaKnown": False,
-            "lastError": "Sign-in expired or network unreachable",
+            "lastError": "Sign-in expired or network unreachable", "statusHint": "Needs attention",
         }
     try:
         about = json.loads(output)
@@ -181,6 +164,7 @@ def fetch_quota(rclone_path, remote, config_path):
         "quotaBytes": total if isinstance(total, (int, float)) and total > 0 else 0,
         "quotaKnown": isinstance(total, (int, float)) and total > 0,
         "lastError": "",
+        "statusHint": "",
     }
 
 
@@ -188,28 +172,17 @@ def account_status(rclone_path, entry):
     account_id = str(entry.get("id", ""))
     display_name = str(entry.get("displayName", account_id))
     remote = str(entry.get("remote", account_id))
-    sync_path = str(entry.get("syncPath", ""))
+    mount_path = str(entry.get("mountPath", ""))
     config_path = STATE_HOME / account_id / "rclone.conf"
 
-    timer_enabled = unit_state(TIMER_TEMPLATE.format(id=account_id), "is-active") if account_id else False
-    running = unit_state(SERVICE_TEMPLATE.format(id=account_id), "is-active") if account_id else False
-
-    last_run = load_last_run(account_id) or {}
-    last_sync_at = last_run.get("finishedAt", 0) if isinstance(last_run.get("finishedAt"), (int, float)) else 0
-    last_sync_ok = last_run.get("ok") is True
-    has_run = bool(last_run)
-    needs_resync = not (STATE_HOME / account_id / "state" / "resync-done").exists()
-
+    active = unit_active(account_id) if account_id else False
     result = {
         "id": account_id,
         "displayName": display_name,
         "authenticated": False,
-        "timerEnabled": timer_enabled,
-        "running": running,
-        "syncPath": sync_path,
-        "lastSyncAt": int(last_sync_at),
-        "lastSyncOk": last_sync_ok if has_run else True,
-        "needsResync": needs_resync,
+        "active": active,
+        "statusText": "Paused" if not active else "Mounted",
+        "mountPath": mount_path,
         "usedBytes": 0,
         "quotaBytes": 0,
         "quotaKnown": False,
@@ -226,11 +199,11 @@ def account_status(rclone_path, entry):
         # account that never actually finished signing in.
         result["lastError"] = "Not signed in yet"
         return result
-    if has_run and not last_sync_ok:
-        exit_code = last_run.get("exitCode")
-        detail = f" (exit {exit_code})" if isinstance(exit_code, int) else ""
-        result["lastError"] = f"Last sync failed{detail} — see {account_id}/state/bisync.log"
 
+    # A healthy quota check is cached for CACHE_TTL_SECONDS to avoid polling
+    # Drive's API on every panel refresh. An error is never cached — always
+    # recheck immediately, so an expired sign-in shows up right away
+    # instead of waiting out the TTL.
     cache = load_cache(account_id)
     fresh_enough = (
         cache is not None
@@ -247,8 +220,8 @@ def account_status(rclone_path, entry):
     result["usedBytes"] = quota["usedBytes"]
     result["quotaBytes"] = quota["quotaBytes"]
     result["quotaKnown"] = quota["quotaKnown"]
-    if quota["lastError"] and not result["lastError"]:
-        result["lastError"] = quota["lastError"]
+    result["lastError"] = quota["lastError"]
+    result["statusText"] = quota["statusHint"] or ("Mounted" if active else "Paused")
     return result
 
 

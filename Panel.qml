@@ -26,7 +26,7 @@ Panel {
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property color barIconColor: gdrive.aggregateState === "syncing" ? barForeground : Qt.darker(barForeground, 1.55)
+  readonly property color barIconColor: gdrive.aggregateState === "mounted" ? barForeground : Qt.darker(barForeground, 1.55)
 
   function ensureCursor() {
     if (gdrive.accounts.length === 0) {
@@ -64,7 +64,7 @@ Panel {
     if (focusSection === "add") gdrive.beginAddAccount()
     else if (focusSection === "accounts") {
       var account = selectedAccount()
-      if (account) gdrive.openSyncFolder(account)
+      if (account) gdrive.openMountFolder(account)
     }
   }
 
@@ -154,10 +154,7 @@ Panel {
         else if (t === "a" || t === "A") gdrive.beginAddAccount()
         else if (t === "o" || t === "O") {
           var account = root.selectedAccount()
-          if (account) gdrive.openSyncFolder(account)
-        } else if (t === "s" || t === "S") {
-          var selected = root.selectedAccount()
-          if (selected) gdrive.syncNow(selected.id)
+          if (account) gdrive.openMountFolder(account)
         }
       }
 
@@ -237,7 +234,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "Click, or press o, to open the selected account's folder — s to sync now"
+              text: "Click, or press o, to open the selected account's folder"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -333,15 +330,14 @@ Panel {
     id: accountRow
     property var account: null
     property int rowIndex: 0
-    readonly property bool enabled_: account ? gdrive.displayEnabled(account) : false
-    // Purple (theme accent) while a pass is actually running, white
-    // (foreground) scheduled-but-idle/paused, red (urgent) errored —
-    // accent specifically, not plain foreground, so "actively syncing"
-    // reads as the theme's brand color rather than indistinguishable
-    // default text color.
+    readonly property bool active: account ? gdrive.displayActive(account) : false
+    // Purple (theme accent) while mounted, white (foreground) paused, red
+    // (urgent) errored — accent specifically, not plain foreground, so
+    // "mounted and live" reads as the theme's brand color rather than
+    // indistinguishable default text color.
     readonly property color statusColor: !account ? root.dim
       : account.lastError !== "" ? root.urgent
-      : account.running ? Color.accent : root.foreground
+      : active ? Color.accent : root.foreground
 
     hasCursor: root.cursorActive && root.focusSection === "accounts" && root.accountIndex === rowIndex
     foreground: root.foreground
@@ -353,7 +349,7 @@ Panel {
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
       onEntered: root.setAccountCursor(accountRow.rowIndex)
-      onClicked: gdrive.openSyncFolder(accountRow.account)
+      onClicked: gdrive.openMountFolder(accountRow.account)
     }
 
     RowLayout {
@@ -390,15 +386,10 @@ Panel {
         Text {
           textFormat: Text.PlainText
           Layout.fillWidth: true
-          text: {
-            if (!accountRow.account) return ""
-            if (accountRow.account.lastError !== "") return accountRow.account.lastError
-            var status = gdrive.statusFor(accountRow.account)
-            if (accountRow.account.quotaKnown) {
-              return status + " · " + Model.usageText(accountRow.account.usedBytes, accountRow.account.quotaBytes, accountRow.account.quotaKnown)
-            }
-            return status
-          }
+          text: accountRow.account
+            ? (accountRow.account.lastError !== "" ? accountRow.account.lastError
+              : Model.usageText(accountRow.account.usedBytes, accountRow.account.quotaBytes, accountRow.account.quotaKnown))
+            : ""
           color: accountRow.account && accountRow.account.lastError !== "" ? root.urgent : root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -406,24 +397,9 @@ Panel {
         }
       }
 
-      PanelActionButton {
-        iconText: "⟳"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        enabled: accountRow.account ? accountRow.account.authenticated && !accountRow.account.running : false
-        Layout.alignment: Qt.AlignVCenter
-        onClicked: if (accountRow.account) gdrive.syncNow(accountRow.account.id)
-
-        PanelToolTip {
-          visible: parent.containsMouse
-          text: "Sync now"
-          fontFamily: root.fontFamily
-        }
-      }
-
       ToggleSwitch {
         visible: accountRow.account ? accountRow.account.authenticated : false
-        checked: accountRow.enabled_
+        checked: accountRow.active
         busy: gdrive.busy
         hasCursor: false
         foreground: root.foreground
@@ -432,7 +408,7 @@ Panel {
 
         PanelToolTip {
           visible: parent.containsMouse
-          text: accountRow.enabled_ ? "Pause syncing" : "Resume syncing"
+          text: accountRow.active ? "Pause" : "Resume"
           fontFamily: root.fontFamily
         }
       }

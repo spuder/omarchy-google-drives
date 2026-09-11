@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# ExecStart for omarchy-google-drive-mount@<id>.service. All configuration
+# comes from the account's env file (GOOGLEDRIVE_REMOTE / _MOUNTPOINT /
+# _CONFIG, written by `googledrive-accountctl add`). Kept as a tiny wrapper
+# rather than inlining the rclone invocation in the unit file so the mount
+# flags have one place to live and can be tuned without touching systemd
+# state.
+set -euo pipefail
+
+: "${GOOGLEDRIVE_REMOTE:?GOOGLEDRIVE_REMOTE is not set}"
+: "${GOOGLEDRIVE_MOUNTPOINT:?GOOGLEDRIVE_MOUNTPOINT is not set}"
+: "${GOOGLEDRIVE_CONFIG:?GOOGLEDRIVE_CONFIG is not set}"
+
+mkdir -p "$GOOGLEDRIVE_MOUNTPOINT"
+
+# Why a mount instead of a full local copy: a real bidirectional sync
+# engine (rclone bisync) requires a complete local replica of everything
+# it's told to sync — there's no partial/streaming mode, and rclone's docs
+# document no disk-space awareness at all. A Drive account with more data
+# than local free disk would either fail outright or silently fill the
+# disk. `rclone mount` avoids that structurally: content is fetched on
+# open, not pre-downloaded, so disk usage is bounded by the cache flags
+# below regardless of how large the Drive account actually is. See
+# PLAN.md's "Why mount, not bisync" section for the full comparison.
+#
+# --vfs-cache-mode=full: on-demand fetch with a local cache for files
+# opened while offline, and lets local writes go through the cache instead
+# of requiring a fully-buffered upload for every write.
+# --vfs-cache-max-size: hard cap on total cache size — this is the actual
+# fix for "2TB in Drive, no 2TB free locally". Least-recently-used cached
+# files are evicted once the cap is hit (rclone can't evict a file that's
+# currently open, so usage can transiently exceed this — see rclone's vfs
+# docs). Override per account by setting GOOGLEDRIVE_CACHE_MAX_SIZE in its
+# env file.
+# --vfs-cache-min-free-space: extra safety margin — stop growing the cache
+# once free disk space drops this low, independent of the max-size cap
+# (protects the rest of the disk if the cap itself is set too generously).
+# --vfs-cache-max-age: evict cached-but-unopened files after this long even
+# if the size cap hasn't been hit, so a one-off large file doesn't sit
+# in the cache indefinitely.
+exec rclone mount "${GOOGLEDRIVE_REMOTE}:" "$GOOGLEDRIVE_MOUNTPOINT" \
+  --config "$GOOGLEDRIVE_CONFIG" \
+  --vfs-cache-mode=full \
+  --vfs-cache-max-size="${GOOGLEDRIVE_CACHE_MAX_SIZE:-20G}" \
+  --vfs-cache-min-free-space="${GOOGLEDRIVE_CACHE_MIN_FREE:-5G}" \
+  --vfs-cache-max-age=48h \
+  --dir-cache-time=1m \
+  --poll-interval=1m \
+  --no-modtime \
+  -o uid="$(id -u)" -o gid="$(id -g)"

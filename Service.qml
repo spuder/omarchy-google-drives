@@ -7,11 +7,13 @@ import "Model.js" as Model
 // Owns all Google Drive account state for the panel. Talks to two helper
 // scripts shipped in bin/: `googledrive-status` (read-only, one JSON object
 // describing every configured account) and `googledrive-accountctl`
-// (add/remove/pause/resume/sync-now, each a single subcommand). Neither
-// script is this plugin's sync engine — that's rclone bisync, run
-// periodically by the per-account `omarchy-google-drive-bisync@<id>.timer`
-// systemd user unit. See PLAN.md for why the daemon lives outside the QML
-// process, same reasoning as the sister Proton Drive plugin.
+// (add/remove/pause/resume, each a single subcommand). Neither script is
+// this plugin's transport — that's rclone mount, supervised by the
+// per-account `omarchy-google-drive-mount@<id>.service` systemd user unit.
+// See PLAN.md for why the daemon lives outside the QML process, and for
+// why this is a mount rather than a full local sync (rclone bisync has no
+// way to bound local disk usage, so it can't safely handle a Drive account
+// bigger than free local disk — a mount's VFS cache can).
 Item {
   id: root
 
@@ -23,10 +25,10 @@ Item {
   property string lastError: ""
   property string actionStatus: ""
 
-  // Optimistic per-account pause/resume, same idea as the Proton Drive
-  // plugin's `_desiredActive`, but keyed by account id since several
-  // accounts can be mid-toggle at once.
-  property var _desiredEnabled: ({})
+  // Optimistic per-account pause/resume, same idea as the Dropbox plugin's
+  // single `_desired` flag but keyed by account id since several accounts
+  // can be mid-toggle at once.
+  property var _desiredActive: ({})
 
   readonly property string aggregateState: Model.aggregateState(accounts)
   readonly property string aggregateStatusText: Model.aggregateSummary(accounts)
@@ -53,13 +55,9 @@ Item {
     return n
   }
 
-  function displayEnabled(account) {
-    var desired = root._desiredEnabled[account.id]
-    return desired === undefined ? account.timerEnabled : desired
-  }
-
-  function statusFor(account) {
-    return Model.statusText(account, Math.floor(Date.now() / 1000))
+  function displayActive(account) {
+    var desired = root._desiredActive[account.id]
+    return desired === undefined ? account.active : desired
   }
 
   function refresh() {
@@ -83,10 +81,10 @@ Item {
     var next = {}
     for (var i = 0; i < accounts.length; i++) {
       var a = accounts[i]
-      var desired = root._desiredEnabled[a.id]
-      if (desired !== undefined && desired !== a.timerEnabled) next[a.id] = desired
+      var desired = root._desiredActive[a.id]
+      if (desired !== undefined && desired !== a.active) next[a.id] = desired
     }
-    root._desiredEnabled = next
+    root._desiredActive = next
   }
 
   function elide(text) {
@@ -97,32 +95,34 @@ Item {
   function toggleAccount(id) {
     var account = accounts.find(function(a) { return a.id === id })
     if (!account || controlProcess.running) return
-    var desired = !displayEnabled(account)
-    var next = Object.assign({}, root._desiredEnabled)
+    var desired = !displayActive(account)
+    var next = Object.assign({}, root._desiredActive)
     next[id] = desired
-    root._desiredEnabled = next
+    root._desiredActive = next
     runControl([desired ? "resume" : "pause", id])
   }
 
-  function syncNow(id) {
-    if (controlProcess.running) return
-    runControl(["sync-now", id])
-  }
-
-  function openSyncFolder(account) {
-    if (!account || !account.syncPath) return
-    Quickshell.execDetached(["uwsm-app", "--", "nautilus", account.syncPath])
+  // Deliberately not hardcoded to a specific file manager — Omarchy is not
+  // tied to one desktop environment, so there's no single "the" file
+  // manager to assume the way macOS can assume Finder. `xdg-open` resolves
+  // to whatever the current session has actually registered as its default
+  // folder handler (Nautilus, Dolphin, Thunar, Nemo, PCManFM-Qt, ...)
+  // without this plugin needing to know or enumerate them. The mount
+  // itself needs no such resolution at all — it's a real directory, and
+  // any file manager (or terminal, or app) can browse it like any other
+  // folder with zero integration work.
+  function openMountFolder(account) {
+    if (!account || !account.mountPath) return
+    Quickshell.execDetached(["uwsm-app", "--", "xdg-open", account.mountPath])
   }
 
   // Google's OAuth sign-in is a browser hand-off, not a password this
   // plugin ever needs to see — `rclone config create ... drive` prints or
   // opens the consent URL itself and blocks until you approve it. So
   // "Add account" opens a real terminal running googledrive-accountctl,
-  // the same launcher pattern used by other rclone-based Omarchy cloud
-  // plugins for their own interactive sign-ins, rather than an in-panel
-  // form (contrast the Proton Drive plugin, which *does* need a form:
-  // Proton has no OAuth hand-off, rclone's protondrive backend does its
-  // own SRP login and needs the actual password).
+  // rather than an in-panel form (contrast the Proton Drive plugin, which
+  // *does* need a form: Proton has no OAuth hand-off, rclone's protondrive
+  // backend does its own SRP login and needs the actual password).
   function beginAddAccount() {
     Quickshell.execDetached([
       "omarchy-launch-floating-terminal-with-presentation",

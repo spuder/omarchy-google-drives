@@ -20,7 +20,7 @@ test("parseAccounts normalizes a two-account payload", () => {
     ok: true,
     rcloneInstalled: true,
     accounts: [
-      { id: "personal", displayName: "Personal", authenticated: true, timerEnabled: true, running: false, usedBytes: 100, quotaBytes: 1000, quotaKnown: true },
+      { id: "personal", displayName: "Personal", authenticated: true, active: true, usedBytes: 100, quotaBytes: 1000, quotaKnown: true },
       { id: "work", authenticated: false }
     ]
   })
@@ -33,23 +33,23 @@ test("parseAccounts normalizes a two-account payload", () => {
   assert.equal(result.accounts[1].authenticated, false)
 })
 
-test("aggregateState prioritizes error over syncing over paused", () => {
-  const syncing = [{ authenticated: true, timerEnabled: true, running: true, lastError: "" }]
-  const errored = [{ authenticated: true, timerEnabled: true, running: true, lastError: "expired" }]
-  const paused = [{ authenticated: true, timerEnabled: false, running: false, lastError: "" }]
-  assert.equal(Model.aggregateState(syncing), "syncing")
+test("aggregateState prioritizes error over mounted over paused", () => {
+  const mounted = [{ authenticated: true, active: true, lastError: "" }]
+  const errored = [{ authenticated: true, active: true, lastError: "expired" }]
+  const paused = [{ authenticated: true, active: false, lastError: "" }]
+  assert.equal(Model.aggregateState(mounted), "mounted")
   assert.equal(Model.aggregateState(errored), "error")
   assert.equal(Model.aggregateState(paused), "paused")
   assert.equal(Model.aggregateState([]), "empty")
 })
 
-test("aggregateSummary counts scheduled accounts", () => {
+test("aggregateSummary counts mounted accounts", () => {
   const accounts = [
-    { authenticated: true, timerEnabled: true, lastError: "" },
-    { authenticated: true, timerEnabled: false, lastError: "" },
-    { authenticated: true, timerEnabled: true, lastError: "" }
+    { authenticated: true, active: true, lastError: "" },
+    { authenticated: true, active: false, lastError: "" },
+    { authenticated: true, active: true, lastError: "" }
   ]
-  assert.equal(Model.aggregateSummary(accounts), "2 of 3 syncing")
+  assert.equal(Model.aggregateSummary(accounts), "2 of 3 mounted")
 })
 
 test("totalUsedBytes sums across accounts", () => {
@@ -67,22 +67,4 @@ test("formatBytes uses SI-style units with sane precision", () => {
 test("usageText falls back to just usedBytes when quota is unknown", () => {
   assert.equal(Model.usageText(1500, 0, false), "1.5 KB")
   assert.equal(Model.usageText(1500, 20_000_000_000, true), "1.5 KB of 20 GB")
-})
-
-test("statusText reflects sign-in, sync, and pause state in priority order", () => {
-  const now = 1_000_000
-  assert.equal(Model.statusText({ authenticated: false }, now), "Not signed in")
-  assert.equal(Model.statusText({ authenticated: true, running: true }, now), "Syncing…")
-  assert.equal(Model.statusText({ authenticated: true, timerEnabled: true, needsResync: true }, now), "Waiting for first sync")
-  assert.equal(Model.statusText({ authenticated: true, timerEnabled: false, needsResync: true }, now), "Paused (never synced)")
-  assert.equal(Model.statusText({ authenticated: true, timerEnabled: false, needsResync: false, lastSyncAt: now - 100 }, now), "Paused")
-  assert.equal(Model.statusText({ authenticated: true, timerEnabled: true, needsResync: false, lastSyncAt: now - 80 }, now), "Synced 1 minute ago")
-})
-
-test("relativeTime buckets sensibly", () => {
-  const now = 1_000_000
-  assert.equal(Model.relativeTime(now - 10, now), "just now")
-  assert.equal(Model.relativeTime(now - 200, now), "3 minutes ago")
-  assert.equal(Model.relativeTime(now - 7200, now), "2 hours ago")
-  assert.equal(Model.relativeTime(now - 172800, now), "2 days ago")
 })
