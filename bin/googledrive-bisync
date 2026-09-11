@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# ExecStart for omarchy-google-drive-bisync@<id>.service. All configuration
+# comes from the account's env file (GOOGLEDRIVE_* vars), written by
+# `googledrive-accountctl add`. One run-to-completion pass: rclone's bisync
+# is a periodic reconciliation command, not a daemon, so this is invoked on
+# a systemd *timer* (see ../systemd/), not a long-running mount process —
+# see README/PLAN.md for why that's the actual "bidirectional sync" ask,
+# unlike a one-way `rclone sync` or an on-demand `rclone mount`.
+set -uo pipefail
+
+: "${GOOGLEDRIVE_ID:?GOOGLEDRIVE_ID is not set}"
+: "${GOOGLEDRIVE_REMOTE:?GOOGLEDRIVE_REMOTE is not set}"
+: "${GOOGLEDRIVE_LOCAL:?GOOGLEDRIVE_LOCAL is not set}"
+: "${GOOGLEDRIVE_CONFIG:?GOOGLEDRIVE_CONFIG is not set}"
+: "${GOOGLEDRIVE_STATE:?GOOGLEDRIVE_STATE is not set}"
+
+mkdir -p "$GOOGLEDRIVE_LOCAL" "$GOOGLEDRIVE_STATE"
+
+RESYNC_MARKER="$GOOGLEDRIVE_STATE/resync-done"
+LOG_FILE="$GOOGLEDRIVE_STATE/bisync.log"
+LAST_RUN="$GOOGLEDRIVE_STATE/last-run.json"
+
+flags=(--config "$GOOGLEDRIVE_CONFIG" --log-file "$LOG_FILE" -v)
+resynced=false
+if [[ ! -f $RESYNC_MARKER ]]; then
+  # Mandatory before the first real bisync run: it establishes the baseline
+  # listing snapshot on both sides. Without it every subsequent run refuses
+  # to start ("empty prior Path1/Path2 listing"). See
+  # https://rclone.org/bisync/#resync
+  flags+=(--resync)
+  resynced=true
+fi
+
+# --conflict-resolve=newer: when the same file changed on both sides
+# between runs, keep whichever side has the newer modification time and
+# move the loser to a .conflict copy, rather than stopping and waiting for
+# a human. That's a real tradeoff (a silent-ish "last writer wins" instead
+# of a conflict-picker UI) — documented in PLAN.md as v0.1 scope, not
+# hidden. --resilient/--recover: ride out the transient errors an rclone
+# bisync run over a real network actually hits (a dropped connection
+# mid-listing) instead of demanding a full --resync after every blip.
+# --max-lock bounds how long a stale lock from a crashed run blocks the
+# next scheduled one.
+start_ts=$(date -u +%s)
+rclone bisync "$GOOGLEDRIVE_LOCAL" "${GOOGLEDRIVE_REMOTE}:" \
+  "${flags[@]}" \
+  --conflict-resolve=newer \
+  --resilient \
+  --recover \
+  --max-lock=2m
+exit_code=$?
+end_ts=$(date -u +%s)
+
+if [[ $exit_code -eq 0 ]]; then
+  touch "$RESYNC_MARKER"
+else
+  # A failed run (including a failed --resync) leaves the marker alone if
+  # it already existed — a transient network blip on an otherwise-healthy
+  # account shouldn't force a full baseline re-scan on the next tick — but
+  # if this run *was* the initial resync and it failed, there is no
+  # baseline yet, so the next run must try --resync again too.
+  [[ $resynced == true ]] && rm -f "$RESYNC_MARKER"
+fi
+
+ok=$([[ $exit_code -eq 0 ]] && echo true || echo false)
+tmp="$LAST_RUN.tmp"
+printf '{"id":"%s","startedAt":%s,"finishedAt":%s,"exitCode":%s,"ok":%s,"resynced":%s}\n' \
+  "$GOOGLEDRIVE_ID" "$start_ts" "$end_ts" "$exit_code" "$ok" "$resynced" > "$tmp"
+mv -f "$tmp" "$LAST_RUN"
+
+exit "$exit_code"

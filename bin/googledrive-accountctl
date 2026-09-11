@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""Manage Google Drive accounts: add, remove, pause, resume, sync-now, list.
+
+State lives under ~/.config/omarchy-google-drive/:
+  accounts.json         list of {id, displayName, remote, syncPath}
+  <id>/rclone.conf       that account's own rclone config (never shared
+                         across accounts, so revoking or corrupting one
+                         can't touch another — same isolation model as the
+                         sister Proton Drive plugin, see PLAN.md)
+  <id>/env               GOOGLEDRIVE_* vars consumed by the systemd unit
+  <id>/state/            resync marker, bisync log, last-run.json — written
+                         by googledrive-bisync, read by googledrive-status
+
+`add` is meant to run inside a terminal (Service.qml's "Add account" button
+launches a floating one) because Google Drive sign-in is rclone's own
+browser OAuth flow: `rclone config create ... drive` starts a local
+webserver, prints/opens an auth URL, and blocks until you approve it in
+your browser. There is no password or 2FA code for this plugin to collect
+itself — unlike the Proton Drive plugin, which has to prompt for
+credentials because Proton's rclone backend does its own SRP login. That's
+also why there's no --json/stdin form here: nothing sensitive ever needs to
+reach this script directly, Google's own consent screen handles it.
+
+Every write to accounts.json goes through atomic_write_accounts: write to a
+sibling temp file, then os.replace over the target, and refuse a target
+that is a symlink first, matching the defensive pattern used throughout
+Omarchy's first-party plugins (and this plugin's own state directories,
+created 0700).
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+STATE_HOME = Path.home() / ".config" / "omarchy-google-drive"
+ACCOUNTS_FILE = STATE_HOME / "accounts.json"
+SYNC_ROOT = Path.home() / "GoogleDrive"
+SERVICE_TEMPLATE = "omarchy-google-drive-bisync@{id}.service"
+TIMER_TEMPLATE = "omarchy-google-drive-bisync@{id}.timer"
+VALID_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
+def fail(message):
+    print(f"googledrive-accountctl: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def ensure_private_dir(path):
+    if path.exists() and path.is_symlink():
+        fail(f"refusing to use a symlinked directory: {path}")
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+
+
+def load_accounts():
+    if not ACCOUNTS_FILE.exists():
+        return []
+    if ACCOUNTS_FILE.is_symlink():
+        fail(f"refusing to read a symlinked accounts file: {ACCOUNTS_FILE}")
+    try:
+        with ACCOUNTS_FILE.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return []
+    accounts = data.get("accounts") if isinstance(data, dict) else None
+    return accounts if isinstance(accounts, list) else []
+
+
+def atomic_write_accounts(accounts):
+    ensure_private_dir(STATE_HOME)
+    if ACCOUNTS_FILE.exists() and ACCOUNTS_FILE.is_symlink():
+        fail(f"refusing to overwrite a symlinked accounts file: {ACCOUNTS_FILE}")
+    tmp = ACCOUNTS_FILE.with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        json.dump({"accounts": accounts}, handle, indent=2)
+        handle.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, ACCOUNTS_FILE)
+
+
+def find_account(accounts, account_id):
+    for entry in accounts:
+        if entry.get("id") == account_id:
+            return entry
+    return None
+
+
+def cmd_list(args):
+    accounts = load_accounts()
+    if not accounts:
+        print("No accounts configured. Add one with: googledrive-accountctl add <id> [display name]")
+        return
+    for entry in accounts:
+        print(f"{entry.get('id')}\t{entry.get('displayName')}\t{entry.get('syncPath')}")
+
+
+def prompt(label, default=None):
+    suffix = f" [{default}]" if default else ""
+    value = input(f"{label}{suffix}: ").strip()
+    return value or (default or "")
+
+
+def _require_rclone():
+    rclone = shutil.which("rclone")
+    if not rclone:
+        fail("rclone is not installed — run the install script first")
+    return rclone
+
+
+def cmd_add(args):
+    rclone = _require_rclone()  # fail before asking anything, not after
+
+    account_id = (args.id or prompt("Account id, e.g. personal or work")).strip().lower()
+    if not VALID_ID.match(account_id):
+        fail("id must be lowercase letters, digits, and hyphens, starting with a letter or digit")
+
+    accounts = load_accounts()
+    if find_account(accounts, account_id):
+        fail(f"account '{account_id}' already exists — remove it first: googledrive-accountctl remove {account_id}")
+
+    default_name = account_id.replace("-", " ").title()
+    display_name = args.display_name or prompt("Display name", default_name)
+
+    account_dir = STATE_HOME / account_id
+    ensure_private_dir(account_dir)
+    ensure_private_dir(account_dir / "state")
+    sync_path = SYNC_ROOT / display_name
+    sync_path.mkdir(parents=True, exist_ok=True)
+    config_path = account_dir / "rclone.conf"
+
+    print()
+    print(f"Signing in to Google Drive for '{account_id}' ({display_name}).")
+    print("This is rclone's own browser sign-in — a browser window will open (or a")
+    print("link will be printed below to open yourself) asking you to choose a Google")
+    print("account and approve access. Nothing is typed into this terminal.")
+    print()
+
+    # rclone's own interactive OAuth flow — deliberately NOT run with
+    # captured stdout/stderr (unlike the Proton plugin's create+verify
+    # calls) because it needs to print the auth URL and, on a machine
+    # without a local browser, prompt "If your browser doesn't open...".
+    # scope=drive (not drive.readonly / drive.file) so bisync can write
+    # both directions. config_is_local=true is rclone's default browser
+    # hand-off; see README for the headless (config_is_local=false)
+    # alternative.
+    create_result = subprocess.run(
+        [rclone, "config", "create", account_id, "drive",
+         "scope=drive", "config_is_local=true",
+         "--config", str(config_path)],
+    )
+    if create_result.returncode != 0:
+        shutil.rmtree(account_dir, ignore_errors=True)
+        fail("Google sign-in was not completed — nothing was saved")
+
+    print()
+    print("Verifying the connection...")
+    about = subprocess.run(
+        [rclone, "about", f"{account_id}:", "--config", str(config_path), "--json"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if about.returncode != 0:
+        shutil.rmtree(account_dir, ignore_errors=True)
+        detail = (about.stderr or about.stdout or "").strip()
+        fail(f"sign-in did not verify, nothing was saved. rclone said:\n  {detail or 'unknown error'}")
+
+    accounts.append({
+        "id": account_id,
+        "displayName": display_name,
+        "remote": account_id,
+        "syncPath": str(sync_path),
+    })
+    atomic_write_accounts(accounts)
+
+    env_path = account_dir / "env"
+    with env_path.open("w", encoding="utf-8") as handle:
+        handle.write(f"GOOGLEDRIVE_ID={account_id}\n")
+        handle.write(f"GOOGLEDRIVE_REMOTE={account_id}\n")
+        handle.write(f"GOOGLEDRIVE_LOCAL={sync_path}\n")
+        handle.write(f"GOOGLEDRIVE_CONFIG={config_path}\n")
+        handle.write(f"GOOGLEDRIVE_STATE={account_dir / 'state'}\n")
+    os.chmod(env_path, 0o600)
+
+    unit = TIMER_TEMPLATE.format(id=account_id)
+    print()
+    print(f"Signed in and verified. Start two-way syncing with:")
+    print(f"  systemctl --user enable --now {unit}")
+    print(f"The first run does a full baseline scan (--resync); after that it's")
+    print(f"incremental, every 5 minutes by default.")
+
+
+def cmd_remove(args):
+    accounts = load_accounts()
+    entry = find_account(accounts, args.id)
+    if not entry:
+        fail(f"no such account: {args.id}")
+
+    timer = TIMER_TEMPLATE.format(id=args.id)
+    service = SERVICE_TEMPLATE.format(id=args.id)
+    subprocess.call(["systemctl", "--user", "disable", "--now", timer],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.call(["systemctl", "--user", "stop", service],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    remaining = [a for a in accounts if a.get("id") != args.id]
+    atomic_write_accounts(remaining)
+    print(f"Removed '{args.id}' from Google Drives. Its rclone config, sync state, and")
+    print(f"local synced folder were left in place:")
+    print(f"  {STATE_HOME / args.id}")
+    print(f"  {entry.get('syncPath', '')}")
+    print("Delete them yourself once you've confirmed nothing still needs them.")
+
+
+def _require_account(args):
+    accounts = load_accounts()
+    entry = find_account(accounts, args.id)
+    if not entry:
+        fail(f"no such account: {args.id}")
+    return entry
+
+
+def cmd_pause(args):
+    _require_account(args)
+    timer = TIMER_TEMPLATE.format(id=args.id)
+    exit_code = subprocess.call(["systemctl", "--user", "disable", "--now", timer])
+    if exit_code != 0:
+        fail(f"systemctl --user disable --now {timer} failed (exit {exit_code})")
+    print(f"{args.id}: paused")
+
+
+def cmd_resume(args):
+    _require_account(args)
+    timer = TIMER_TEMPLATE.format(id=args.id)
+    exit_code = subprocess.call(["systemctl", "--user", "enable", "--now", timer])
+    if exit_code != 0:
+        fail(f"systemctl --user enable --now {timer} failed (exit {exit_code})")
+    print(f"{args.id}: resumed")
+
+
+def cmd_sync_now(args):
+    _require_account(args)
+    service = SERVICE_TEMPLATE.format(id=args.id)
+    # --no-block: return immediately, the panel/CLI polls googledrive-status
+    # for the result instead of hanging a terminal open for a large first
+    # --resync.
+    exit_code = subprocess.call(["systemctl", "--user", "start", "--no-block", service])
+    if exit_code != 0:
+        fail(f"systemctl --user start {service} failed (exit {exit_code})")
+    print(f"{args.id}: sync started")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="googledrive-accountctl")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_list = sub.add_parser("list", help="list configured accounts")
+    p_list.set_defaults(func=cmd_list)
+
+    p_add = sub.add_parser("add", help="add and sign in to a new account")
+    p_add.add_argument("id", nargs="?", default=None, help="short id, e.g. personal (prompted for if omitted)")
+    p_add.add_argument("display_name", nargs="?", default=None, help="display name, e.g. \"Personal\" (prompted for if omitted)")
+    p_add.set_defaults(func=cmd_add)
+
+    p_remove = sub.add_parser("remove", help="stop and forget an account (keeps local files)")
+    p_remove.add_argument("id")
+    p_remove.set_defaults(func=cmd_remove)
+
+    p_pause = sub.add_parser("pause", help="stop an account's sync timer")
+    p_pause.add_argument("id")
+    p_pause.set_defaults(func=cmd_pause)
+
+    p_resume = sub.add_parser("resume", help="start an account's sync timer")
+    p_resume.add_argument("id")
+    p_resume.set_defaults(func=cmd_resume)
+
+    p_sync = sub.add_parser("sync-now", help="trigger one sync pass immediately")
+    p_sync.add_argument("id")
+    p_sync.set_defaults(func=cmd_sync_now)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

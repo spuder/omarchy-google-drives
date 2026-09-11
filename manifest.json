@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "id": "spencerowen.googledrive",
+  "name": "Google Drives",
+  "version": "0.1.0",
+  "author": "Spencer Owen",
+  "license": "MIT",
+  "description": "Real two-way sync for multiple Google Drive accounts: bar status, storage usage, and pause/resume, backed by rclone bisync.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Google Drives",
+    "description": "Sign in to one or more Google Drive accounts, see two-way sync status and storage per account, and pause or resume syncing.",
+    "category": "Files",
+    "aliases": [
+      "googledrive",
+      "googledrives",
+      "google",
+      "drive",
+      "drives",
+      "gdrive"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30,
+      "syncRoot": "~/GoogleDrive",
+      "showQuota": true
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "syncRoot",
+        "type": "string",
+        "label": "Sync root",
+        "defaultValue": "~/GoogleDrive",
+        "description": "Parent directory holding one two-way-synced folder per account, e.g. ~/GoogleDrive/Personal."
+      },
+      {
+        "key": "showQuota",
+        "type": "boolean",
+        "label": "Show storage usage in the panel",
+        "defaultValue": true
+      }
+    ]
+  }
+}

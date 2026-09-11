@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""Read-only status helper for the Google Drives Quickshell panel.
+
+Prints one JSON object on stdout, shaped for Model.js's parseAccounts():
+
+    {"ok": true, "rcloneInstalled": bool, "accounts": [...], "lastError": ""}
+
+Each account comes from ~/.config/omarchy-google-drive/accounts.json
+(written by googledrive-accountctl) plus:
+  - whether its systemd *timer* is enabled ("active" — sync scheduled) and
+    whether its *service* is currently running a pass ("running");
+  - the last completed run, from <id>/state/last-run.json (written by
+    googledrive-bisync) — when it finished, whether it succeeded, whether
+    it was a baseline --resync;
+  - storage usage/quota via `rclone about`, cached like the Proton Drive
+    plugin's quota check (CACHE_TTL_SECONDS) so the panel's periodic
+    refresh doesn't hit the Drive API live every ~30s per account. A
+    healthy result is trusted for the TTL; an error always rechecks
+    immediately.
+
+Never raises — a missing rclone, a missing config directory, or a hung
+`rclone about` call all degrade to a normal-looking JSON object with the
+account's `lastError` field set, rather than crashing the panel.
+
+--demo prints a fixed two-account fixture instead of touching the real
+config or rclone.
+"""
+
+import configparser
+import json
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+STATE_HOME = Path.home() / ".config" / "omarchy-google-drive"
+ACCOUNTS_FILE = STATE_HOME / "accounts.json"
+TIMER_TEMPLATE = "omarchy-google-drive-bisync@{id}.timer"
+SERVICE_TEMPLATE = "omarchy-google-drive-bisync@{id}.service"
+CACHE_TTL_SECONDS = 600
+
+
+def demo_payload():
+    now = int(time.time())
+    return {
+        "ok": True,
+        "rcloneInstalled": True,
+        "accounts": [
+            {
+                "id": "personal",
+                "displayName": "Personal",
+                "authenticated": True,
+                "timerEnabled": True,
+                "running": False,
+                "syncPath": str(Path.home() / "GoogleDrive" / "Personal"),
+                "lastSyncAt": now - 180,
+                "lastSyncOk": True,
+                "needsResync": False,
+                "usedBytes": 4_200_000_000,
+                "quotaBytes": 20_000_000_000,
+                "quotaKnown": True,
+                "lastError": "",
+            },
+            {
+                "id": "work",
+                "displayName": "Work",
+                "authenticated": True,
+                "timerEnabled": False,
+                "running": False,
+                "syncPath": str(Path.home() / "GoogleDrive" / "Work"),
+                "lastSyncAt": now - 9000,
+                "lastSyncOk": True,
+                "needsResync": False,
+                "usedBytes": 61_000_000_000,
+                "quotaBytes": 500_000_000_000,
+                "quotaKnown": True,
+                "lastError": "",
+            },
+        ],
+        "lastError": "",
+    }
+
+
+def command_output(command, timeout=4):
+    try:
+        completed = subprocess.run(
+            command, check=False, capture_output=True, text=True, timeout=timeout
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
+    return completed.returncode, (completed.stdout or "").strip()
+
+
+def load_accounts():
+    if not ACCOUNTS_FILE.exists():
+        return []
+    try:
+        with ACCOUNTS_FILE.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return []
+    accounts = data.get("accounts") if isinstance(data, dict) else None
+    return accounts if isinstance(accounts, list) else []
+
+
+def config_has_token(config_path):
+    """True if the account's rclone.conf has an OAuth token saved — a cheap
+    local check that doesn't need a network round trip. Doesn't assume the
+    section name matches the account id (rclone names it from whatever was
+    passed to `config create`, which has always been the account id here,
+    but this reads whichever section exists rather than assuming)."""
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(config_path)
+    except configparser.Error:
+        return False
+    for section in parser.sections():
+        if parser.get(section, "token", fallback="").strip():
+            return True
+    return False
+
+
+def unit_state(unit, mode="is-active"):
+    exit_code, _ = command_output(["systemctl", "--user", mode, "--quiet", unit], timeout=3)
+    return exit_code == 0
+
+
+def load_last_run(account_id):
+    path = STATE_HOME / account_id / "state" / "last-run.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def cache_path(account_id):
+    return STATE_HOME / account_id / "quota-cache.json"
+
+
+def load_cache(account_id):
+    path = cache_path(account_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def save_cache(account_id, data):
+    path = cache_path(account_id)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    tmp.replace(path)
+
+
+def fetch_quota(rclone_path, remote, config_path):
+    """One live `rclone about` call. Returns a dict with authenticated/
+    usedBytes/quotaBytes/quotaKnown/lastError — never raises."""
+    exit_code, output = command_output(
+        [rclone_path, "about", f"{remote}:", "--config", str(config_path), "--json"],
+        timeout=6,
+    )
+    if exit_code != 0:
+        return {
+            "authenticated": False, "usedBytes": 0, "quotaBytes": 0, "quotaKnown": False,
+            "lastError": "Sign-in expired or network unreachable",
+        }
+    try:
+        about = json.loads(output)
+    except json.JSONDecodeError:
+        about = {}
+    used = about.get("used")
+    total = about.get("total")
+    return {
+        "authenticated": True,
+        "usedBytes": used if isinstance(used, (int, float)) else 0,
+        "quotaBytes": total if isinstance(total, (int, float)) and total > 0 else 0,
+        "quotaKnown": isinstance(total, (int, float)) and total > 0,
+        "lastError": "",
+    }
+
+
+def account_status(rclone_path, entry):
+    account_id = str(entry.get("id", ""))
+    display_name = str(entry.get("displayName", account_id))
+    remote = str(entry.get("remote", account_id))
+    sync_path = str(entry.get("syncPath", ""))
+    config_path = STATE_HOME / account_id / "rclone.conf"
+
+    timer_enabled = unit_state(TIMER_TEMPLATE.format(id=account_id), "is-active") if account_id else False
+    running = unit_state(SERVICE_TEMPLATE.format(id=account_id), "is-active") if account_id else False
+
+    last_run = load_last_run(account_id) or {}
+    last_sync_at = last_run.get("finishedAt", 0) if isinstance(last_run.get("finishedAt"), (int, float)) else 0
+    last_sync_ok = last_run.get("ok") is True
+    has_run = bool(last_run)
+    needs_resync = not (STATE_HOME / account_id / "state" / "resync-done").exists()
+
+    result = {
+        "id": account_id,
+        "displayName": display_name,
+        "authenticated": False,
+        "timerEnabled": timer_enabled,
+        "running": running,
+        "syncPath": sync_path,
+        "lastSyncAt": int(last_sync_at),
+        "lastSyncOk": last_sync_ok if has_run else True,
+        "needsResync": needs_resync,
+        "usedBytes": 0,
+        "quotaBytes": 0,
+        "quotaKnown": False,
+        "lastError": "",
+    }
+
+    if rclone_path is None:
+        result["lastError"] = "rclone is not installed"
+        return result
+    if not config_path.exists() or not config_has_token(config_path):
+        # A config file can exist without a completed OAuth exchange — a
+        # browser sign-in that was closed before approving, or interrupted.
+        # Checking locally avoids reporting a misleading "expired" for an
+        # account that never actually finished signing in.
+        result["lastError"] = "Not signed in yet"
+        return result
+    if has_run and not last_sync_ok:
+        exit_code = last_run.get("exitCode")
+        detail = f" (exit {exit_code})" if isinstance(exit_code, int) else ""
+        result["lastError"] = f"Last sync failed{detail} — see {account_id}/state/bisync.log"
+
+    cache = load_cache(account_id)
+    fresh_enough = (
+        cache is not None
+        and cache.get("authenticated") is True
+        and not cache.get("lastError")
+        and (time.time() - cache.get("checkedAt", 0)) < CACHE_TTL_SECONDS
+    )
+
+    quota = cache if fresh_enough else fetch_quota(rclone_path, remote, config_path)
+    if not fresh_enough:
+        save_cache(account_id, dict(quota, checkedAt=time.time()))
+
+    result["authenticated"] = quota["authenticated"]
+    result["usedBytes"] = quota["usedBytes"]
+    result["quotaBytes"] = quota["quotaBytes"]
+    result["quotaKnown"] = quota["quotaKnown"]
+    if quota["lastError"] and not result["lastError"]:
+        result["lastError"] = quota["lastError"]
+    return result
+
+
+def main():
+    if "--demo" in sys.argv[1:]:
+        print(json.dumps(demo_payload()))
+        return
+
+    rclone_path = shutil.which("rclone")
+    entries = load_accounts()
+    accounts = [account_status(rclone_path, entry) for entry in entries if isinstance(entry, dict)]
+
+    print(json.dumps({
+        "ok": True,
+        "rcloneInstalled": rclone_path is not None,
+        "accounts": accounts,
+        "lastError": "",
+    }))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,19 @@
+[Unit]
+Description=Periodic Google Drive two-way sync (%i)
+Documentation=https://github.com/spuder/omarchy-google-drives
+
+[Timer]
+# First sync shortly after login/enable, then every 5 minutes. 5 minutes
+# matches rclone's own bisync documentation recommendation for a sane
+# default cadence — frequent enough to feel "synced", not so frequent that
+# N accounts add up to hammering the Drive API. Override per-account with:
+#   systemctl --user edit omarchy-google-drive-bisync@<id>.timer
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Catch up on a sync that a suspended/off laptop missed, next time it wakes.
+Persistent=true
+# Don't let every account's timer fire in the same instant.
+RandomizedDelaySec=20
+
+[Install]
+WantedBy=timers.target

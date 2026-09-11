@@ -1,0 +1,19 @@
+[Unit]
+Description=Google Drive two-way sync (%i)
+Documentation=https://github.com/spuder/omarchy-google-drives
+After=network-online.target
+Wants=network-online.target
+# The timer is what decides *when* this runs; keep the service itself
+# start-limit-free so a burst of manual `sync-now` triggers (or the timer
+# catching up after suspend) never gets suppressed.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/omarchy-google-drive/%i/env
+ExecStart=%h/.local/bin/googledrive-bisync
+# rclone bisync is a single run-to-completion pass, not a daemon — nothing
+# to restart here. A failed run is reported by googledrive-status instead
+# and retried on the timer's next tick (see googledrive-bisync's resync
+# marker handling for what happens after a failure).
+TimeoutStartSec=30m
