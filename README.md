@@ -210,6 +210,16 @@ included.
 - `googledrive-accountctl` writes `accounts.json` atomically (temp file +
   `os.replace`) and refuses a symlinked target or state directory.
 - Commands are run as argument arrays, never interpolated shell strings.
+- The persistent mount unit executes `googledrive-mount` from this
+  plugin's own installed directory, not a copy in the generic, shared
+  `~/.local/bin`; the two CLI helpers that *are* placed there
+  (`googledrive-status`, `googledrive-accountctl`) are collision-checked
+  symlinks — `install.sh` refuses to overwrite anything already at that
+  path that isn't its own prior symlink, and `uninstall.sh` mirrors that,
+  never removing a file it didn't create.
+- `python3`, `rclone`, and `systemctl` are resolved from a fixed,
+  trusted set of directories, not whatever `PATH` a calling process
+  happened to inherit.
 - Revoke access any time from your
   [Google Account security page](https://myaccount.google.com/permissions).
 

@@ -11,14 +11,39 @@
 # own directory, not the caller's.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+PLUGIN_DIR="$(pwd)"
 
 echo "Installing rclone and fuse3..."
 omarchy-pkg-add rclone fuse3
 
-echo "Installing helper scripts to ~/.local/bin..."
-install -Dm755 bin/googledrive-status "$HOME/.local/bin/googledrive-status"
-install -Dm755 bin/googledrive-accountctl "$HOME/.local/bin/googledrive-accountctl"
-install -Dm755 bin/googledrive-mount "$HOME/.local/bin/googledrive-mount"
+# Symlink (not copy) the two CLI helpers onto PATH, and only if nothing
+# unrelated already occupies that name — ~/.local/bin is a generic, shared,
+# user-writable directory, so blindly overwriting whatever's there could
+# clobber a pre-existing unrelated tool. A symlink back into this plugin's
+# own directory also means a `git pull` here is immediately live, no
+# reinstall needed, and uninstall.sh can safely tell "ours" from "not ours"
+# before removing anything.
+link_or_skip() {  # link_or_skip <name>
+  local name="$1"
+  local source="$PLUGIN_DIR/bin/$name" dest="$HOME/.local/bin/$name"
+  mkdir -p "$(dirname "$dest")"
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    if [[ "$(readlink -f -- "$dest" 2>/dev/null)" == "$(readlink -f -- "$source")" ]]; then
+      return 0  # already ours, nothing to do
+    fi
+    echo "install.sh: $dest already exists and isn't ours — leaving it alone." >&2
+    echo "  Run $name from $source instead, or remove $dest yourself and re-run install.sh." >&2
+    return 0
+  fi
+  ln -s "$source" "$dest"
+}
+
+echo "Linking helper scripts onto PATH (~/.local/bin)..."
+link_or_skip googledrive-status
+link_or_skip googledrive-accountctl
+# googledrive-mount is intentionally NOT linked here — the systemd unit
+# below executes it directly from this plugin's own directory instead of
+# via a copy in a generic shared location. See the unit file's own comment.
 
 echo "Installing the per-account systemd user template..."
 install -Dm644 systemd/omarchy-google-drive-mount@.service \

@@ -15,7 +15,13 @@ StartLimitBurst=5
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/omarchy-google-drive/%i/env
-ExecStart=%h/.local/bin/googledrive-mount
+# Points into this plugin's own installed directory (namespaced by its
+# globally-unique manifest id, so nothing else can legitimately occupy
+# this exact path) rather than a copy in ~/.local/bin. ~/.local/bin is a
+# generic, shared, user-writable directory — anything else running as
+# this user could overwrite a same-named file there, and this unit
+# (persistent, auto-restarting) would then execute whatever replaced it.
+ExecStart=%h/.config/omarchy/plugins/spuder.googledrive/bin/googledrive-mount
 # Leading '-': a stop where nothing is actually mounted (already
 # unmounted, or the previous start never got that far) makes fusermount3
 # exit non-zero ("entry for <path> not found in /etc/mtab"). Without the

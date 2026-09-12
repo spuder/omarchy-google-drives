@@ -42,6 +42,32 @@ Item {
   property string _controlOutput: ""
   property string _controlError: ""
 
+  // Absolute, trusted path rather than a bare "python3" resolved through
+  // whatever PATH this shell process happened to inherit — this Item is
+  // instantiated by the long-lived omarchy-shell process, so pinning where
+  // its child processes come from matters the same way it does for the
+  // systemd-launched mount (see bin/googledrive-mount's own comment).
+  readonly property string python3: "/usr/bin/python3"
+
+  // Defensive cap on what a StdioCollector's finished text is allowed to
+  // propagate into this Item's own properties. Quickshell's StdioCollector
+  // buffers the complete stream internally before onStreamFinished ever
+  // fires, so this bounds what we retain and pass along, not the collector's
+  // own peak memory while reading — a true pre-buffer cap would mean
+  // reading the stream in chunks instead of collecting it whole, which
+  // isn't warranted here: both helper scripts only ever print a small,
+  // bounded amount (one JSON status object, or a short status line), so
+  // this exists as a defensive ceiling against the unexpected, not because
+  // either script is expected to approach it.
+  readonly property int maxCollectedChars: 65536
+
+  function capText(text) {
+    text = String(text || "")
+    return text.length > root.maxCollectedChars
+      ? text.substring(0, root.maxCollectedChars) + "…[truncated]"
+      : text
+  }
+
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
     return value === undefined || value === null ? fallback : value
@@ -64,7 +90,7 @@ Item {
     if (statusProcess.running) return
     _statusOutput = ""
     _statusError = ""
-    statusProcess.command = ["python3", root.pluginDir + "bin/googledrive-status"]
+    statusProcess.command = [root.python3, root.pluginDir + "bin/googledrive-status"]
     statusProcess.running = true
   }
 
@@ -144,7 +170,7 @@ Item {
   function runControl(command) {
     _controlOutput = ""
     _controlError = ""
-    controlProcess.command = ["python3", root.pluginDir + "bin/googledrive-accountctl"].concat(command)
+    controlProcess.command = [root.python3, root.pluginDir + "bin/googledrive-accountctl"].concat(command)
     controlProcess.running = true
   }
 
@@ -175,8 +201,8 @@ Item {
     id: statusProcess
     running: false
     command: []
-    stdout: StdioCollector { id: statusStdout; waitForEnd: true; onStreamFinished: root._statusOutput = text }
-    stderr: StdioCollector { id: statusStderr; waitForEnd: true; onStreamFinished: root._statusError = text }
+    stdout: StdioCollector { id: statusStdout; waitForEnd: true; onStreamFinished: root._statusOutput = root.capText(text) }
+    stderr: StdioCollector { id: statusStderr; waitForEnd: true; onStreamFinished: root._statusError = root.capText(text) }
     onExited: function(exitCode) {
       var stdout = String(statusStdout.text || root._statusOutput || "")
       var stderr = String(statusStderr.text || root._statusError || "")
@@ -189,8 +215,8 @@ Item {
     id: controlProcess
     running: false
     command: []
-    stdout: StdioCollector { id: controlStdout; waitForEnd: true; onStreamFinished: root._controlOutput = text }
-    stderr: StdioCollector { id: controlStderr; waitForEnd: true; onStreamFinished: root._controlError = text }
+    stdout: StdioCollector { id: controlStdout; waitForEnd: true; onStreamFinished: root._controlOutput = root.capText(text) }
+    stderr: StdioCollector { id: controlStderr; waitForEnd: true; onStreamFinished: root._controlError = root.capText(text) }
     onExited: function(exitCode) {
       var stdout = String(controlStdout.text || root._controlOutput || "")
       var stderr = String(controlStderr.text || root._controlError || "")

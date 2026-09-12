@@ -273,3 +273,57 @@ template, install/uninstall scripts, unit + smoke tests. Done.
   the config password through `libsecret`/`gnome-keyring` via rclone's
   `--password-command` (the approach edbron/omarchy-cloud-drives already
   ships) is a later item, not yet done.
+
+### Marketplace security review fixes (2026-09-12)
+
+Three concrete findings from the marketplace submission's security review
+([issue #6454](https://github.com/omacom/omarchy-plugin-marketplace/issues/6454)),
+all fixed:
+
+- **Path hijack via a copy in a generic shared directory.** `install.sh`
+  copied `googledrive-mount` into `~/.local/bin`, and the persistent,
+  auto-restarting systemd unit executed it from there — anything else
+  running as the same user could overwrite that file, and the unit would
+  then run whatever replaced it. Fixed by pointing `ExecStart` at this
+  plugin's own installed directory instead
+  (`%h/.config/omarchy/plugins/spuder.googledrive/bin/googledrive-mount`),
+  which is collision-free by construction since it's namespaced by the
+  plugin's own globally-unique manifest id. The two CLI helpers that are
+  still placed in `~/.local/bin` for terminal convenience
+  (`googledrive-status`, `googledrive-accountctl`) switched from blind
+  `install -Dm755` copies to collision-checked symlinks: `install.sh`
+  refuses to overwrite anything already at that path that isn't its own
+  prior symlink (warns and skips instead), and `uninstall.sh` mirrors that
+  check before removing anything, so it can never delete a file it didn't
+  create.
+- **PATH-order hijack.** Service.qml launched bare `"python3"`, and the
+  Python/bash helpers resolved `rclone`/`systemctl` via whatever `PATH`
+  the calling process inherited. Fixed by pinning resolution to a fixed,
+  trusted set of directories throughout: `/usr/bin/python3` hardcoded in
+  Service.qml's `Process.command` arrays and in both scripts' shebang
+  lines; `shutil.which(..., path="/usr/bin:/usr/local/bin")` for
+  `rclone`/`notify-send` instead of an unrestricted lookup;
+  `/usr/bin/systemctl` hardcoded outright (as stable a path as exists on
+  any systemd distro).
+- **Unbounded output collection.** The QML `StdioCollector` instances
+  retained complete stdout/stderr with no size cap. Added a 64KB
+  (`maxCollectedChars`) truncation in `Service.qml`'s `capText()`, applied
+  to all four collectors before the text is stored on `Item` properties.
+  Worth being precise about what this does and doesn't cover: Quickshell's
+  `StdioCollector` (with `waitForEnd: true`) buffers the entire stream
+  internally before `onStreamFinished` ever fires, so this bounds what
+  gets *propagated* into this plugin's own state, not the collector's own
+  peak memory while reading. A true pre-buffer cap would mean reading the
+  stream incrementally instead of collecting it whole — not done, since
+  both helper scripts only ever print a small, bounded amount by design
+  (one JSON status object, or a short status line); this exists as a
+  defensive ceiling against the unexpected, not a response to either
+  script actually approaching the limit.
+
+One unrelated bug caught while writing the collision-check fix, not from
+the review: `local name="$1" source="...$name" dest="...$name"` on one
+line doesn't work under `set -u` — bash expands every word on a command
+line before any of that line's assignments take effect, so `$name` inside
+the same `local` statement it's being assigned in is still unbound.
+Reproduced directly, then split into two `local` statements in both
+`install.sh` and `uninstall.sh`.

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Read-only status helper for the Google Drives Quickshell panel.
 
 Prints one JSON object on stdout, shaped for Model.js's parseAccounts():
@@ -38,6 +38,14 @@ STATE_HOME = Path.home() / ".config" / "omarchy-google-drive"
 ACCOUNTS_FILE = STATE_HOME / "accounts.json"
 UNIT_TEMPLATE = "omarchy-google-drive-mount@{id}.service"
 CACHE_TTL_SECONDS = 600
+
+# This script is launched automatically on a timer by the shell process,
+# not typed by a human each time — so `rclone` and `systemctl` are resolved
+# from a fixed, trusted set of directories rather than whatever PATH the
+# calling process happened to inherit (systemctl's location is standard
+# enough on any systemd distro to hardcode outright).
+TRUSTED_PATH = "/usr/bin:/usr/local/bin"
+SYSTEMCTL = "/usr/bin/systemctl"
 
 
 def demo_payload():
@@ -115,7 +123,7 @@ def config_has_token(config_path):
 
 def unit_active(account_id):
     unit = UNIT_TEMPLATE.format(id=account_id)
-    exit_code, _ = command_output(["systemctl", "--user", "is-active", "--quiet", unit], timeout=3)
+    exit_code, _ = command_output([SYSTEMCTL, "--user", "is-active", "--quiet", unit], timeout=3)
     return exit_code == 0
 
 
@@ -230,7 +238,7 @@ def main():
         print(json.dumps(demo_payload()))
         return
 
-    rclone_path = shutil.which("rclone")
+    rclone_path = shutil.which("rclone", path=TRUSTED_PATH)
     entries = load_accounts()
     accounts = [account_status(rclone_path, entry) for entry in entries if isinstance(entry, dict)]
 
