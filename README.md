@@ -31,10 +31,6 @@ terminal afterward is real friction. Add as many accounts as you like;
 each shows up as its own row, and each is a separate trip through Google's
 account chooser, so you can sign in with a different account every time.
 
-Remove with `~/.config/omarchy/plugins/spuder.googledrive/uninstall.sh`
-(your signed-in accounts and mounted files are left alone; see the script
-for exactly what it does and doesn't touch).
-
 ### Google OAuth client ID
 
 rclone's shared Google Drive OAuth client is being retired during 2026.
@@ -44,6 +40,20 @@ and pass it to `rclone config create` (or `rclone config reconnect <id>:`
 to update an existing account). This plugin doesn't ship or reuse a shared
 client ID, and never reads the client ID, secret, or token directly —
 rclone owns that configuration.
+
+## Uninstall
+
+```bash
+~/.config/omarchy/plugins/spuder.googledrive/uninstall.sh
+```
+
+Stops and disables every configured account's mount unit, disables the bar
+widget, and removes the helper scripts and systemd unit this plugin
+installed. Your signed-in accounts and mounted files are left in
+place — see [uninstall.sh](uninstall.sh) for exactly what it does and
+doesn't touch (`~/.config/omarchy-google-drive` and `~/GoogleDrive` are
+never deleted; remove those yourself once you've confirmed you don't need
+them).
 
 ## Why this one
 
