@@ -88,9 +88,15 @@ Panel {
   // First call arms removal for this account (and starts the timeout that
   // disarms it again); a second call while already armed for the same
   // account actually removes it. Shared by the row's remove button and the
-  // 'd' key so both go through the same confirm step.
+  // 'd' key so both go through the same confirm step. Guarded on
+  // gdrive.busy: without it, confirming removal while another control
+  // action (e.g. a pause/resume for a different account) was still in
+  // flight used to clear confirmRemoveId and silently drop the removal —
+  // removeAccount() itself already no-ops while busy, but by then the
+  // confirmation state was already gone, so the click just did nothing
+  // with no feedback at all.
   function attemptRemove(account) {
-    if (!account) return
+    if (!account || gdrive.busy) return
     if (root.confirmRemoveId === account.id) {
       root.confirmRemoveId = ""
       confirmRemoveTimer.stop()
@@ -421,7 +427,9 @@ Panel {
           text: !accountRow.account ? ""
             : accountRow.confirmingRemove ? "Click ✕ again, or press d again, to remove — local files are kept"
             : (accountRow.account.lastError !== "" ? accountRow.account.lastError
-              : Model.usageText(accountRow.account.usedBytes, accountRow.account.quotaBytes, accountRow.account.quotaKnown))
+              : (gdrive.showQuota
+                ? Model.usageText(accountRow.account.usedBytes, accountRow.account.quotaBytes, accountRow.account.quotaKnown)
+                : accountRow.account.statusText))
           color: accountRow.confirmingRemove ? root.urgent
             : (accountRow.account && accountRow.account.lastError !== "" ? root.urgent : root.dim)
           font.family: root.fontFamily
@@ -434,8 +442,15 @@ Panel {
         iconText: "✕"
         foreground: accountRow.confirmingRemove ? root.urgent : root.foreground
         fontFamily: root.fontFamily
+        enabled: !gdrive.busy
         Layout.alignment: Qt.AlignVCenter
         onClicked: root.attemptRemove(accountRow.account)
+
+        PanelToolTip {
+          visible: parent.containsMouse
+          text: "Remove"
+          fontFamily: root.fontFamily
+        }
       }
 
       ToggleSwitch {

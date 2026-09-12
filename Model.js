@@ -50,6 +50,12 @@ function aggregateState(accounts) {
   if (accounts.some(function(a) { return a.lastError !== "" })) return "error"
   if (accounts.some(function(a) { return a.authenticated && a.active })) return "mounted"
   if (accounts.every(function(a) { return a.authenticated && !a.active })) return "paused"
+  // Not currently reachable given googledrive-status's own contract: every
+  // account it produces either has lastError set or is authenticated, so
+  // the two branches above are exhaustive today. Left in deliberately, in
+  // case that contract ever loosens (e.g. an authenticated-but-not-yet-
+  // mounted-or-paused transitional state) — a silent fallthrough here
+  // would otherwise be indistinguishable from a real bug.
   return "attention"
 }
 

@@ -61,12 +61,22 @@ ACCOUNTS_FILE = STATE_HOME / "accounts.json"
 
 # `add` runs interactively (a human is watching the terminal), but pause/
 # resume/remove are also reachable straight from the panel with no human
-# reviewing the command first — resolve rclone/notify-send from a fixed,
-# trusted set of directories rather than inherited PATH, and systemctl
-# outright (its location is standard on any systemd distro).
-TRUSTED_PATH = "/usr/bin:/usr/local/bin"
+# reviewing the command first — resolve rclone/notify-send from a fixed
+# trusted directory rather than inherited PATH, and systemctl outright
+# (its location is standard on any systemd distro). /usr/local/bin is
+# deliberately not included: nothing this script calls actually lives
+# there, so it isn't trusted unverified. Kept identical to
+# googledrive-status's own TRUSTED_PATH/SYSTEMCTL — update both together
+# if either changes.
+TRUSTED_PATH = "/usr/bin"
 SYSTEMCTL = "/usr/bin/systemctl"
-MOUNT_ROOT = Path.home() / "GoogleDrive"
+# Overridable via GOOGLEDRIVE_MOUNT_ROOT, set by Service.qml's
+# beginAddAccount() from the plugin's "mountRoot" setting (manifest.json
+# schema) — the same env-var-override pattern GOOGLEDRIVE_CACHE_MAX_SIZE
+# already uses for googledrive-mount. Falls back to the historical default
+# so calling `add` directly from a terminal, with no environment override,
+# behaves exactly as before.
+MOUNT_ROOT = Path(os.environ.get("GOOGLEDRIVE_MOUNT_ROOT") or str(Path.home() / "GoogleDrive")).expanduser()
 UNIT_TEMPLATE = "omarchy-google-drive-mount@{id}.service"
 VALID_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
