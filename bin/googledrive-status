@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Read-only status helper for the Google Drives Quickshell panel.
 
 Prints one JSON object on stdout, shaped for Model.js's parseAccounts():

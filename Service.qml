@@ -49,23 +49,47 @@ Item {
   // launched processes also run under clearEnvironment (see below), so
   // the executable's own identity and its environment are both pinned.
   readonly property string python3: "/usr/bin/python3"
-  readonly property string trustedPath: "/usr/bin:/usr/local/bin"
+  // Includes Omarchy's own script directory (verified: this is where
+  // omarchy-launch-floating-terminal-with-presentation and the scripts it
+  // sources in turn actually live) since beginAddAccount() below launches
+  // it by absolute path but its own internal bare-name lookups still need
+  // this directory on PATH to resolve safely.
+  readonly property string trustedPath: "/usr/bin:/usr/local/bin:/usr/share/omarchy/bin"
 
-  // Every process below runs with clearEnvironment: true — the environment
-  // isn't just PATH-restricted, it's rebuilt from nothing and only these
-  // four passed through: PATH to our own trusted value (never the
-  // system/session one), and HOME/XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS
-  // (null = "pass the system value through", per Quickshell's
-  // clearEnvironment semantics) because googledrive-status/-accountctl
-  // need them (Path.home(), and systemctl --user's session addressing)
-  // and none of the three are secret — they're session-location info any
-  // process in this login session already has. Everything else (LD_PRELOAD,
-  // PYTHONPATH, etc.) is simply absent rather than inherited.
+  // Every python3 Process below runs with clearEnvironment: true — the
+  // environment isn't just PATH-restricted, it's rebuilt from nothing and
+  // only these four passed through: PATH to our own trusted value (never
+  // the system/session one), and HOME/XDG_RUNTIME_DIR/
+  // DBUS_SESSION_BUS_ADDRESS (null = "pass the system value through", per
+  // Quickshell's clearEnvironment semantics) because googledrive-status/
+  // -accountctl need them (Path.home(), and systemctl --user's session
+  // addressing) and none of the three are secret — they're
+  // session-location info any process in this login session already has.
+  // Everything else (LD_PRELOAD, PYTHONPATH, etc.) is simply absent
+  // rather than inherited.
   readonly property var minimalEnvironment: ({
     PATH: root.trustedPath,
     HOME: null,
     XDG_RUNTIME_DIR: null,
     DBUS_SESSION_BUS_ADDRESS: null
+  })
+
+  // Wider allowlist for the two detached GUI launches below (opening a
+  // file manager, opening a terminal) — a real desktop app needs more than
+  // the three session-location variables above to actually display
+  // itself. Verified directly on the machine this was written on, not
+  // guessed: ran `xdg-open`/`uwsm-app -- xdg-open` under exactly this
+  // allowlist (env -i plus these names) and confirmed the real default
+  // file manager opened successfully before relying on it here.
+  readonly property var desktopEnvironment: ({
+    PATH: root.trustedPath,
+    HOME: null,
+    XDG_RUNTIME_DIR: null,
+    DBUS_SESSION_BUS_ADDRESS: null,
+    WAYLAND_DISPLAY: null,
+    XDG_CURRENT_DESKTOP: null,
+    XDG_DATA_DIRS: null,
+    XDG_CONFIG_DIRS: null
   })
 
   // Defensive cap on how much output either helper is allowed to produce,
@@ -188,7 +212,11 @@ Item {
   // folder with zero integration work.
   function openMountFolder(account) {
     if (!account || !account.mountPath) return
-    Quickshell.execDetached(["uwsm-app", "--", "xdg-open", account.mountPath])
+    Quickshell.execDetached({
+      command: ["/usr/bin/uwsm-app", "--", "/usr/bin/xdg-open", account.mountPath],
+      clearEnvironment: true,
+      environment: root.desktopEnvironment
+    })
   }
 
   // Google's OAuth sign-in is a browser hand-off, not a password this
@@ -199,10 +227,14 @@ Item {
   // *does* need a form: Proton has no OAuth hand-off, rclone's protondrive
   // backend does its own SRP login and needs the actual password).
   function beginAddAccount() {
-    Quickshell.execDetached([
-      "omarchy-launch-floating-terminal-with-presentation",
-      root.pluginDir + "bin/googledrive-accountctl", "add"
-    ])
+    Quickshell.execDetached({
+      command: [
+        "/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation",
+        root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "add"
+      ],
+      clearEnvironment: true,
+      environment: root.desktopEnvironment
+    })
     delayedRefresh.restart()
   }
 

@@ -233,6 +233,15 @@ included.
   is available from Quickshell's QML API, so a helper's own already-spawned
   child isn't taken down by killing the helper itself — bounded instead by
   that child's own short timeout).
+- `install.sh`/`uninstall.sh` re-exec themselves through `env -i` before
+  doing anything else, discarding the entire inherited environment and
+  rebuilding it from only what's actually needed (`HOME`,
+  `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `OMARCHY_PATH`, and a
+  pinned `PATH`) — `omarchy-pkg-add` runs `sudo pacman` internally, so
+  resolving it (or anything it calls) through a tainted inherited `PATH`
+  would let a shadowed command ride along into that privilege boundary.
+  The panel's "open folder" and "add account" launches get the same
+  absolute-path + closed-environment treatment.
 - Revoke access any time from your
   [Google Account security page](https://myaccount.google.com/permissions).
 

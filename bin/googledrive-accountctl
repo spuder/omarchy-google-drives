@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Manage Google Drive accounts: add, remove, pause, resume, list.
 
 State lives under ~/.config/omarchy-google-drive/:

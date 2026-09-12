@@ -381,3 +381,73 @@ regardless of the parent's fate. A true process-group kill would need
 launching the child into its own process group (e.g. via a `setsid`
 wrapper) and signaling the group, which isn't achievable through the QML
 API alone — flagged here rather than claimed as done.
+
+### Round 3: the installation boundary and detached launches (2026-09-12)
+
+Round 2 fixed the QML-launched helpers; this round's finding was that the
+*installation* boundary had the identical problem one level up:
+`install.sh`/`uninstall.sh` resolve `omarchy-pkg-add`, `mkdir`, `readlink`,
+`ln`, `install`, `systemctl`, and `omarchy-plugin-enable`/`-disable` by
+bare name through the caller's inherited environment, and `Service.qml`'s
+two `Quickshell.execDetached()` calls (`uwsm-app`, `xdg-open`,
+`omarchy-launch-floating-terminal-with-presentation`) do the same. The
+sharper point specifically named: `omarchy-pkg-add` runs `sudo pacman`
+internally — confirmed by reading it directly
+(`/usr/share/omarchy/bin/omarchy-pkg-add`) — so a shadowed command ahead
+of it in a tainted `PATH` doesn't just get user-level code execution, it
+can ride along into that `sudo` call.
+
+**install.sh / uninstall.sh**: both now re-exec themselves through
+`/usr/bin/env -i` as the very first thing, before any other line runs —
+the entire inherited environment is discarded and rebuilt from nothing.
+Verified every command each script actually calls, then hardcoded
+absolute paths for the ones that matter (`omarchy-pkg-add`,
+`omarchy-plugin-enable`/`-disable`, `systemctl`, `mkdir`, `readlink`,
+`ln`, `install`) — command paths checked directly on the machine this was
+written on (`command -v`), not assumed. Coreutils this script calls but
+doesn't name explicitly (`grep`, `rm`, `cd`, `dirname`) are still safe
+without individual hardcoding: the re-exec already pinned `PATH` to
+`/usr/bin:/usr/local/bin:/usr/share/omarchy/bin`, so there's nothing else
+on it to resolve to.
+
+`uninstall.sh` also stopped resolving `googledrive-accountctl` through
+the `~/.local/bin` symlink at all (which the closed environment's `PATH`
+no longer includes, by design) — it now calls the plugin's own
+`bin/googledrive-accountctl` by absolute, plugin-owned path directly, one
+less thing depending on a symlink the script is itself about to remove.
+
+**This was live-tested, not just `bash -n`-checked, and that caught two
+real bugs the syntax check couldn't**: the first `env -i` re-exec attempt
+immediately broke `systemctl --user daemon-reload` ("Failed to connect to
+user scope bus... $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not
+defined") and then, once that was fixed, broke `omarchy-plugin-enable`
+too ("OMARCHY_PATH is not set" — traced into `omarchy-shell`, which
+refuses to run without it). Both are non-secret, fixed-value session/
+install-location info, now passed through explicitly in the `env -i`
+invocation alongside `HOME`. Re-ran end to end after each fix until
+`install.sh` completed cleanly (`Enabled spuder.googledrive`, exit 0) —
+this is exactly the failure mode a "looks right, never actually run"
+security fix produces, worth remembering next time.
+
+**Service.qml's two `execDetached` calls** switched from a plain command
+array to the object form (`{command, environment, clearEnvironment}` —
+confirmed via `Quickshell.execDetached`'s own header that it accepts the
+same shape `Process.exec()` does), with absolute paths for `uwsm-app`,
+`xdg-open`, and `omarchy-launch-floating-terminal-with-presentation`, and
+a `desktopEnvironment` allowlist wider than the two helper processes'
+`minimalEnvironment` (adds `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP`,
+`XDG_DATA_DIRS`, `XDG_CONFIG_DIRS` — a real GUI app needs more than the
+three session-location variables the headless helpers do). Verified
+empirically before committing to it, not assumed: ran `xdg-open` and the
+exact `uwsm-app -- xdg-open` combination under `env -i` with only that
+allowlist and confirmed the real default file manager (Strata, on this
+machine) opened successfully.
+
+**`python3 -I` now also applies on the direct-shebang execution path**,
+not just Service.qml's explicit `Process.command` invocations: both
+scripts' shebangs changed to `#!/usr/bin/python3 -I` (confirmed this
+particular single-flag form is honored correctly by this kernel's
+binfmt_script handling, live, before relying on it) — otherwise
+`beginAddAccount()`'s terminal-launched `googledrive-accountctl` and
+`uninstall.sh`'s direct call would have bypassed isolated mode entirely
+depending on invocation path.
