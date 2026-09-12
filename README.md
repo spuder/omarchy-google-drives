@@ -12,7 +12,7 @@ the Drive account actually is.
 
 ```bash
 omarchy plugin add https://github.com/spuder/omarchy-google-drives.git --enable
-~/.config/omarchy/plugins/spencerowen.googledrive/install.sh
+~/.config/omarchy/plugins/spuder.googledrive/install.sh
 ```
 
 The first line clones and enables the widget; the second installs rclone,
@@ -31,7 +31,7 @@ terminal afterward is real friction. Add as many accounts as you like;
 each shows up as its own row, and each is a separate trip through Google's
 account chooser, so you can sign in with a different account every time.
 
-Remove with `~/.config/omarchy/plugins/spencerowen.googledrive/uninstall.sh`
+Remove with `~/.config/omarchy/plugins/spuder.googledrive/uninstall.sh`
 (your signed-in accounts and mounted files are left alone; see the script
 for exactly what it does and doesn't touch).
 
@@ -109,9 +109,9 @@ Settings are stored inline with the widget entry in
 `~/.config/omarchy/shell.json` and can be changed with `omarchy bar set`:
 
 ```sh
-omarchy bar set spencerowen.googledrive refreshIntervalSec 60 --json
-omarchy bar set spencerowen.googledrive mountRoot "$HOME/GoogleDrive"
-omarchy bar set spencerowen.googledrive showQuota false --json
+omarchy bar set spuder.googledrive refreshIntervalSec 60 --json
+omarchy bar set spuder.googledrive mountRoot "$HOME/GoogleDrive"
+omarchy bar set spuder.googledrive showQuota false --json
 ```
 
 The cache size cap is per-account, set in its env file rather than as a
@@ -142,7 +142,7 @@ sanitized and de-duplicated automatically — `googledrive-accountctl list`
 shows you the id it actually picked. Override it with `--id` on `add` if
 you want something else.
 
-## Comparison
+## Related
 
 There's a real sister project to this one for Proton Drive:
 [spuder/omarchy-protondrive](https://github.com/spuder/omarchy-protondrive).
@@ -150,31 +150,6 @@ Same author, same architecture (per-account isolated rclone config,
 per-account systemd unit, one bar-widget panel), same reasoning for using
 rclone instead of a hand-rolled sync engine — this plugin follows that
 mount-per-account shape directly.
-
-Three existing Omarchy plugins also cover Google Drive:
-
-- **[edbron/omarchy-cloud-drives](https://github.com/edbron/omarchy-cloud-drives)**
-  — `rclone mount` for Google Drive, OneDrive, and iCloud Drive, each at
-  one **fixed path** per provider (`~/Cloud/GoogleDrive`). One Google
-  account at a time; a second one has to replace the first.
-- **[JoshuaFurman/omarchy-cloud-plugin](https://github.com/JoshuaFurman/omarchy-cloud-plugin)**
-  — a more general `rclone mount` wizard covering many backends, with a
-  configurable VFS cache size, same core mechanism this plugin uses.
-- **[wesleycole/omarchy-google-drive](https://github.com/wesleycole/omarchy-google-drive)**
-  — Google Drive specifically, also `rclone mount`, also one remote
-  (`gdrive` by default). Thin and well-documented, but doesn't manage
-  rclone config itself (you run `rclone config` yourself first) and opens
-  files specifically in Nautilus rather than the session's default handler.
-
-All three are architecturally close to this plugin now — mount plus VFS
-cache is the right tool for "browse Drive without running out of disk," and
-there's no point reinventing it differently. What none of the three do is
-run **multiple Google accounts simultaneously with full isolation**:
-edbron mounts one fixed path per provider, wesleycole supports a single
-named remote, and JoshuaFurman's wizard, while flexible across backends, is
-not built around several accounts of the *same* backend coexisting. That's
-the actual gap this plugin closes — matching what `omarchy-protondrive`
-already does for account isolation, applied to Google Drive.
 
 (An earlier design of this plugin used `rclone bisync` for genuine
 two-way, offline-capable sync instead of a mount. See

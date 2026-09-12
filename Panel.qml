@@ -14,8 +14,8 @@ import "Model.js" as Model
 // instead of a single account's file list. See PLAN.md.
 Panel {
   id: root
-  moduleName: "spencerowen.googledrive"
-  ipcTarget: "spencerowen.googledrive"
+  moduleName: "spuder.googledrive"
+  ipcTarget: "spuder.googledrive"
   manageIpc: false
 
   property string focusSection: "add"

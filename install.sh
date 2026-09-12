@@ -6,7 +6,7 @@
 # omarchy-plugin-validate). Third-party plugins install themselves.
 #
 # Usage, run once, after `omarchy plugin add <this repo> --enable`:
-#   ~/.config/omarchy/plugins/spencerowen.googledrive/install.sh
+#   ~/.config/omarchy/plugins/spuder.googledrive/install.sh
 # Safe to run from anywhere: everything below is relative to this script's
 # own directory, not the caller's.
 set -euo pipefail
@@ -26,7 +26,7 @@ install -Dm644 systemd/omarchy-google-drive-mount@.service \
 systemctl --user daemon-reload
 
 echo "Adding Google Drives to the bar..."
-omarchy-plugin-enable spencerowen.googledrive
+omarchy-plugin-enable spuder.googledrive
 
 cat <<MSG
 

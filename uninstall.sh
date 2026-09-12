@@ -13,7 +13,7 @@ if command -v googledrive-accountctl >/dev/null 2>&1; then
   done < <(googledrive-accountctl list 2>/dev/null | grep -v '^No accounts' || true)
 fi
 
-omarchy-plugin-disable spencerowen.googledrive || true
+omarchy-plugin-disable spuder.googledrive || true
 
 rm -f "$HOME/.local/bin/googledrive-status" \
       "$HOME/.local/bin/googledrive-accountctl" \

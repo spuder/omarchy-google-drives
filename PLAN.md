@@ -10,7 +10,7 @@ tests, `googledrive-status --demo` has a JSON-shape smoke test.
 
 **Installed and exercised live**, not just statically reviewed: running in
 a real `omarchy-shell`, symlinked (`ln -sfn ~/Projects/omarchy-google-drives
-~/.config/omarchy/plugins/spencerowen.googledrive`) so source edits apply
+~/.config/omarchy/plugins/spuder.googledrive`) so source edits apply
 after `omarchy restart shell` without a full reinstall. Two real Google
 accounts signed in end to end (browser OAuth, email-derived id, auto-start)
 and mounted simultaneously — see the panel screenshot at the top of the
