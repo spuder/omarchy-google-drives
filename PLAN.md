@@ -2,16 +2,27 @@
 
 ## Status of this repo (read this first)
 
-This is v0.1, built the same way as its sister project
-([omarchy-protondrive](https://github.com/spuder/omarchy-protondrive)) was
-at the same stage: the shell (manifest, Panel/Service/Model, bar icon), the
-CLI (`googledrive-accountctl`, `googledrive-status`, `googledrive-mount`),
-the systemd template, and the install/uninstall scripts are all written and
+This is v0.1. The shell (manifest, Panel/Service/Model, bar icon), the CLI
+(`googledrive-accountctl`, `googledrive-status`, `googledrive-mount`), the
+systemd template, and the install/uninstall scripts are all written and
 internally consistent — `Model.js`'s parsing/formatting logic has unit
-tests, `googledrive-status --demo` has a JSON-shape smoke test — but this
-has **not yet been installed into a live `omarchy-shell` and exercised
-against a real Google account**. Treat the panel/QML layer as unverified
-until that happens; see Roadmap.
+tests, `googledrive-status --demo` has a JSON-shape smoke test.
+
+**Installed and exercised live**, not just statically reviewed: running in
+a real `omarchy-shell`, symlinked (`ln -sfn ~/Projects/omarchy-google-drives
+~/.config/omarchy/plugins/spencerowen.googledrive`) so source edits apply
+after `omarchy restart shell` without a full reinstall. Two real Google
+accounts signed in end to end (browser OAuth, email-derived id, auto-start)
+and mounted simultaneously — see the panel screenshot at the top of the
+README, taken from this actual run: both accounts showing real storage
+usage (81 GB of 2.2 TB; 31.5 MB of 16.1 GB) and files. This flushed out two
+real systemd unit bugs (StartLimit* silently ignored in the wrong section;
+a failed `ExecStop` counted as the whole unit failing and triggering an
+unwanted restart loop right after a fresh mount) — both fixed, see git
+history. Not yet exercised: the VFS cache actually evicting under load
+(mounted accounts so far are small enough that eviction hasn't been
+forced), and the remove button/keyboard-confirm flow (added after the
+screenshot above).
 
 This repo went through one architecture change before reaching this state:
 v0.1 originally used `rclone bisync` for genuine two-way, offline-capable
@@ -205,21 +216,21 @@ afterward-friction, turns out to bother people.
 **Phase 1 — this repo.** Manifest + bar/panel plugin, account CLI, systemd
 template, install/uninstall scripts, unit + smoke tests. Done.
 
-**Phase 2 — prove it live.** Not yet done, the actual gap between this and
-"finished":
-- Install into a real `omarchy-shell` (`omarchy plugin add` +
-  `install.sh`) and confirm the bar icon, panel, and account rows render
-  and react.
-- A real, successful `googledrive-accountctl add` against an actual Google
-  account: confirm the OAuth browser hand-off completes, `rclone about`
-  reports quota correctly, and the mount survives reboot/suspend.
-- Confirm the disk-bounding actually holds under load: mount an account
-  with more data than local free space, browse enough of it to fill the
-  cache cap, and confirm eviction keeps disk usage at the configured
-  ceiling rather than growing unbounded.
-- Add `docs/bar.png` / `docs/panel.png` once there's a real render to
-  capture (README references none yet, deliberately, for the same reason
-  the Proton Drive plugin didn't add screenshots until Phase 2).
+**Phase 2 — prove it live.**
+- Done: installed into a real `omarchy-shell` (symlinked plugin dir +
+  `install.sh`); bar icon, panel, and account rows confirmed rendering and
+  reacting.
+- Done: a real, successful `googledrive-accountctl add` against two actual
+  Google accounts — OAuth browser hand-off, email-derived id, auto-start,
+  `rclone about` quota all confirmed working. Not yet confirmed: surviving
+  a reboot/suspend cycle.
+- Done: `preview.png` in the README, a real capture of the panel with two
+  mounted accounts.
+- Still open: confirm the disk-bounding actually holds under load — mount
+  an account with more data than local free space, browse enough of it to
+  fill the cache cap, and confirm eviction keeps disk usage at the
+  configured ceiling rather than growing unbounded. Everything mounted so
+  far has been small enough that eviction was never actually forced.
 
 **Phase 3 — optional offline pinning (deferred, not committed).**
 - Revisit the hybrid design sketched above: an explicit, opt-in "keep this

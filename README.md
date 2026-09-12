@@ -1,5 +1,7 @@
 # Google Drives
 
+<img src="preview.png" alt="Google Drives panel showing two accounts mounted, with storage usage and a remove/pause toggle per account" width="500">
+
 Google Drive, mounted like a real folder, for as many accounts as you have.
 A bar widget for [Omarchy](https://omarchy.org/) that turns Google Drive into
 `~/GoogleDrive/<account>`, right there in your file manager, no browser tab
