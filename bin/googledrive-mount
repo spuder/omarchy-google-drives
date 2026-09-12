@@ -38,6 +38,14 @@ mkdir -p "$GOOGLEDRIVE_MOUNTPOINT"
 # --vfs-cache-max-age: evict cached-but-unopened files after this long even
 # if the size cap hasn't been hit, so a one-off large file doesn't sit
 # in the cache indefinitely.
+# No -o uid=/-o gid= here (an earlier version passed these): on at least
+# one real rclone build this logged "ERROR : -o/--option not supported
+# with this FUSE backend" on every single start. Harmless — rclone ignored
+# them and the mount worked anyway — but pure noise: without --allow-other
+# the mount is only visible to the user running it in the first place, and
+# FUSE already reports that user's own uid/gid by default with no flag
+# needed, which is exactly what a plain `ls -la` on the mount already
+# showed even while the flag was being rejected.
 exec rclone mount "${GOOGLEDRIVE_REMOTE}:" "$GOOGLEDRIVE_MOUNTPOINT" \
   --config "$GOOGLEDRIVE_CONFIG" \
   --vfs-cache-mode=full \
@@ -46,5 +54,4 @@ exec rclone mount "${GOOGLEDRIVE_REMOTE}:" "$GOOGLEDRIVE_MOUNTPOINT" \
   --vfs-cache-max-age=48h \
   --dir-cache-time=1m \
   --poll-interval=1m \
-  --no-modtime \
-  -o uid="$(id -u)" -o gid="$(id -g)"
+  --no-modtime

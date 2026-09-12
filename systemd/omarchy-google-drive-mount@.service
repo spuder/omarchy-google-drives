@@ -3,18 +3,28 @@ Description=Google Drive mount (%i)
 Documentation=https://github.com/spuder/omarchy-google-drives
 After=network-online.target
 Wants=network-online.target
+# rclone's own retry/backoff handles transient Drive API errors; this just
+# stops systemd from respawning into a hard failure loop. (StartLimit* only
+# takes effect in [Unit] — systemd silently ignores it in [Service] with
+# just a log line, "Unknown key 'StartLimitIntervalSec', ignoring", which
+# is exactly what happened here in testing: it sat in [Service] doing
+# nothing until moved.)
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/omarchy-google-drive/%i/env
 ExecStart=%h/.local/bin/googledrive-mount
-ExecStop=/usr/bin/fusermount3 -u ${GOOGLEDRIVE_MOUNTPOINT}
+# Leading '-': a stop where nothing is actually mounted (already
+# unmounted, or the previous start never got that far) makes fusermount3
+# exit non-zero ("entry for <path> not found in /etc/mtab"). Without the
+# '-', systemd counts that as this unit failing *on stop*, which — seen
+# live — triggers an unwanted Restart=on-failure cycle right as the mount
+# was otherwise fine.
+ExecStop=-/usr/bin/fusermount3 -u ${GOOGLEDRIVE_MOUNTPOINT}
 Restart=on-failure
 RestartSec=5
-# rclone's own retry/backoff handles transient Drive API errors; this just
-# stops systemd from respawning into a hard failure loop.
-StartLimitIntervalSec=120
-StartLimitBurst=5
 
 [Install]
 WantedBy=default.target
