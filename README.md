@@ -145,7 +145,7 @@ you want something else.
 ## Related
 
 There's a real sister project to this one for Proton Drive:
-[spuder/omarchy-protondrive](https://github.com/spuder/omarchy-protondrive).
+[spuder/omarchy-protondrives](https://github.com/spuder/omarchy-protondrives).
 Same author, same architecture (per-account isolated rclone config,
 per-account systemd unit, one bar-widget panel), same reasoning for using
 rclone instead of a hand-rolled sync engine — this plugin follows that
