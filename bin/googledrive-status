@@ -28,9 +28,11 @@ config or rclone.
 
 import configparser
 import json
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -108,18 +110,23 @@ def load_accounts():
 
 
 def config_has_token(config_path):
-    """True if the account's rclone.conf has an OAuth token saved — a cheap
-    local check that doesn't need a network round trip. Doesn't assume the
-    section name matches the account id (rclone names it from whatever was
-    passed to `config create`, which has always been the account id here,
-    but this reads whichever section exists rather than assuming)."""
+    """True if the account's rclone.conf has a non-empty OAuth token saved
+    — a cheap local check that doesn't need a network round trip. Doesn't
+    assume the section name matches the account id (rclone names it from
+    whatever was passed to `config create`, which has always been the
+    account id here, but this reads whichever section exists rather than
+    assuming). Checks the option's presence before reading its value —
+    the actual token content is never assigned to a named variable, logged,
+    or returned, only compared against blank inline, consistent with
+    treating this as a credential the CLI owns rather than one this
+    plugin holds onto."""
     parser = configparser.ConfigParser()
     try:
         parser.read(config_path)
     except configparser.Error:
         return False
     for section in parser.sections():
-        if parser.get(section, "token", fallback="").strip():
+        if parser.has_option(section, "token") and parser.get(section, "token").strip():
             return True
     return False
 
@@ -146,9 +153,20 @@ def load_cache(account_id):
 
 def save_cache(account_id, data):
     path = cache_path(account_id)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    tmp.replace(path)  # same directory, so this is an atomic rename
+    # Exclusive, unpredictable temp name (see googledrive-accountctl's
+    # atomic_write_accounts, which has the identical reasoning) rather
+    # than a fixed ".json.tmp" — this is only quota numbers, not anything
+    # sensitive, but the write pattern should still not be one a
+    # pre-placed symlink at a guessable name could redirect.
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".quota-cache.", suffix=".json.tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data))
+        tmp.replace(path)  # same directory, so this is an atomic rename
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def fetch_quota(rclone_path, remote, config_path):

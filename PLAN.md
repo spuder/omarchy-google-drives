@@ -580,3 +580,87 @@ far has found something real and worth fixing; this specific ask reads as
 the point where further hardening trades real value for the appearance of
 thoroughness. Flagged for a human decision rather than either silently
 skipped or silently implemented.
+
+## Third-party Omarchy-plugin skills (2026-09-12)
+
+Used the 12 canonical skills from
+[tcballard/build-omarchy-plugins](https://github.com/tcballard/build-omarchy-plugins)
+v0.3.1 to review this codebase, via a user-level install rather than
+vendoring them into this repo — they're a general Omarchy-plugin-authoring
+toolkit, not something specific to this plugin, so they belong installed
+once for the user (`build-omarchy-plugins-skills-0.3.1.zip`, verified
+against that release's own `SHA256SUMS`) rather than duplicated into every
+plugin repo that happens to use them. MIT licensed (Tom Ballard); no files
+from that release are checked in here. Notable, and part of why this
+seemed worth doing beyond generic best practice: that release's own
+research draws on 6,531 marketplace issue/PR records including 6,286
+comments specifically by `HANCORE-linux` — the same reviewer this repo's
+own submission (issue #6454) has been going back and forth with across
+four rounds.
+
+Read through the skills relevant to an existing `bar-widget` plugin
+(`omarchy-bar-widget`, `omarchy-qml-patterns`, `omarchy-service-ipc`, and
+their `references/`) against this codebase as it already stood after the
+round-4 fixes. Most of what they prescribe was already true here — bounded
+output, whole-operation deadlines, absolute executable paths, minimal
+environments, argument arrays, no nested settings object, `allowMultiple:
+false`, plain-text rendering on every dynamic `Text` element (checked: all
+7 already had it) — which is itself useful confirmation that four rounds
+of review pressure converged on roughly the same place this toolkit's
+independent research did. Three concrete gaps did turn up, all fixed and
+verified live rather than just read about:
+
+- **`config_has_token()` read the OAuth token's actual value into memory
+  just to check it was non-blank**, where `parser.has_option(section,
+  "token")` answers the same question without ever touching the value —
+  matches `process-safety.md`'s "do not read tokens from config files,
+  copy them into QML state, or print them to diagnostics" (this plugin
+  never did the QML/diagnostics part, but reading the value at all for a
+  pure existence check was more than necessary). Fixed: check presence
+  first, only inspect the value inline (never bound to a named variable)
+  to reject a blank one.
+- **`notify()` passed user-supplied text (an account's email) as a bare
+  positional argument to `notify-send`, without a `--` end-of-options
+  marker.** `reviewer-boundaries.md` names this pattern directly: "A list
+  of arguments prevents shell interpretation but does not prevent a tool
+  from treating attacker-controlled data as an option." Verified this was
+  a real, reproducible defect, not theoretical, before fixing it:
+  `notify-send --app-name=x --urgency=normal "-h looks like a flag" "body"`
+  fails outright with `Unknown option -h looks like a flag`; the identical
+  call with a `--` inserted before the positional arguments exits 0. An
+  email an account owner chooses for their own account isn't really
+  "attacker-controlled" in the usual sense, but it's still user-typed text
+  this plugin doesn't otherwise validate the shape of beyond looking
+  roughly email-shaped, and the fix is free.
+- **`atomic_write_accounts()` and `save_cache()` both wrote to a
+  predictable fixed name (`<file>.json.tmp`) rather than an exclusively
+  created, unpredictable one** before renaming it into place —
+  `reviewer-boundaries.md` again: "Create private temporary files
+  exclusively and unpredictably, then replace relative to the retained
+  parent." Both now use `tempfile.mkstemp()` in the same directory (so the
+  final `os.replace()`/`.replace()` stays an atomic same-filesystem
+  rename), with cleanup on any exception. Same caveat as round 4's
+  unaddressed ownership-verification ask: `STATE_HOME` is already a
+  private `0700` directory only this user can write to in the first
+  place, so this raises the bar against a *predictable-name* race
+  specifically rather than against a co-resident malicious process in
+  general — worth doing regardless since `mkstemp()` costs nothing extra
+  over a fixed suffix.
+
+Also verified with the skill's own bundled tooling, not just this repo's
+existing tests: `omarchy-plugin-test`'s `validate_plugin.py --json
+--security .`, run from the user-level install against this repo, reports
+`"valid": true` and no structural errors. (Running it from inside a
+checkout of the skills repo itself, rather than against this plugin, does
+throw a `needs-fixes` finding and stray capability flags — the validator
+matching its own detection-pattern strings, and its reference docs'
+teaching examples about sudo/pkexec/cargo, against its own source. Not
+something that can happen here now that the skills aren't checked into
+this tree, but worth remembering if it ever comes up again elsewhere: a
+security-pattern scanner run over the tree it lives in will find itself.)
+
+Reviewed, no code change needed: `omarchy-bar-widget`'s guidance to design
+both horizontal and vertical bar forms ("a vertical bar should not merely
+rotate a long horizontal label") — this plugin's bar surface is a bare
+icon with no text label, so there's no long label to rotate incorrectly in
+the first place.

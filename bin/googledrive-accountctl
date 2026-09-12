@@ -54,6 +54,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 STATE_HOME = Path.home() / ".config" / "omarchy-google-drive"
@@ -112,12 +113,24 @@ def atomic_write_accounts(accounts):
     ensure_private_dir(STATE_HOME)
     if ACCOUNTS_FILE.exists() and ACCOUNTS_FILE.is_symlink():
         fail(f"refusing to overwrite a symlinked accounts file: {ACCOUNTS_FILE}")
-    tmp = ACCOUNTS_FILE.with_suffix(".json.tmp")
-    with tmp.open("w", encoding="utf-8") as handle:
-        json.dump({"accounts": accounts}, handle, indent=2)
-        handle.write("\n")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, ACCOUNTS_FILE)
+    # A fixed ".json.tmp" name here previously meant this file was
+    # predictable, not created exclusively — anything with write access to
+    # STATE_HOME (0700, so only this user, but still) could pre-place a
+    # symlink at that exact path and have this open() follow it instead of
+    # creating a fresh, private file. mkstemp() creates its file
+    # exclusively (O_CREAT|O_EXCL) with an unpredictable suffix, in the
+    # same directory so the final os.replace() stays an atomic rename.
+    fd, tmp_name = tempfile.mkstemp(dir=STATE_HOME, prefix=".accounts.", suffix=".json.tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"accounts": accounts}, handle, indent=2)
+            handle.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, ACCOUNTS_FILE)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def find_account(accounts, account_id):
@@ -158,13 +171,24 @@ def notify(summary, body="", urgency="normal"):
     """Best-effort desktop notification — so finishing sign-in doesn't
     require going back to find the floating terminal window (which Google's
     own OAuth consent screen, taking over the browser, tends to bury).
-    Silently does nothing if notify-send isn't available; never raises."""
+    Silently does nothing if notify-send isn't available; never raises.
+
+    `body` is usually the account's own email — a value this plugin didn't
+    choose and won't validate the shape of beyond looking roughly like an
+    address (see EMAIL_RE), so it's still a real user-typed string that can
+    start with a hyphen. An argument array prevents shell interpretation
+    but not notify-send's own flag parser from treating a leading-hyphen
+    positional as an unrecognized option instead of text to display —
+    confirmed directly: `notify-send --app-name=x -- "-h" "body"` behaves
+    as intended, the same call without the `--` fails outright with
+    "Unknown option". The `--` marks the end of notify-send's own options,
+    same idea as `rm -- "$file"`."""
     notify_send = shutil.which("notify-send", path=TRUSTED_PATH)
     if not notify_send:
         return
     try:
         subprocess.run(
-            [notify_send, "--app-name=Google Drives", f"--urgency={urgency}", summary, body],
+            [notify_send, "--app-name=Google Drives", f"--urgency={urgency}", "--", summary, body],
             check=False, timeout=3, capture_output=True,
         )
     except (OSError, subprocess.TimeoutExpired):
