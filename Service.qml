@@ -37,35 +37,74 @@ Item {
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 30, 5, 600)
 
-  property string _statusOutput: ""
-  property string _statusError: ""
-  property string _controlOutput: ""
-  property string _controlError: ""
-
   // Absolute, trusted path rather than a bare "python3" resolved through
   // whatever PATH this shell process happened to inherit — this Item is
   // instantiated by the long-lived omarchy-shell process, so pinning where
   // its child processes come from matters the same way it does for the
   // systemd-launched mount (see bin/googledrive-mount's own comment).
+  // "-I" (isolated mode) additionally makes the interpreter ignore
+  // PYTHONPATH/PYTHONHOME/user site-packages and inherited *.pth files —
+  // an absolute path alone still lets inherited Python/loader environment
+  // variables influence what runs at startup, which -I closes off. The
+  // launched processes also run under clearEnvironment (see below), so
+  // the executable's own identity and its environment are both pinned.
   readonly property string python3: "/usr/bin/python3"
+  readonly property string trustedPath: "/usr/bin:/usr/local/bin"
 
-  // Defensive cap on what a StdioCollector's finished text is allowed to
-  // propagate into this Item's own properties. Quickshell's StdioCollector
-  // buffers the complete stream internally before onStreamFinished ever
-  // fires, so this bounds what we retain and pass along, not the collector's
-  // own peak memory while reading — a true pre-buffer cap would mean
-  // reading the stream in chunks instead of collecting it whole, which
-  // isn't warranted here: both helper scripts only ever print a small,
-  // bounded amount (one JSON status object, or a short status line), so
-  // this exists as a defensive ceiling against the unexpected, not because
-  // either script is expected to approach it.
+  // Every process below runs with clearEnvironment: true — the environment
+  // isn't just PATH-restricted, it's rebuilt from nothing and only these
+  // four passed through: PATH to our own trusted value (never the
+  // system/session one), and HOME/XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS
+  // (null = "pass the system value through", per Quickshell's
+  // clearEnvironment semantics) because googledrive-status/-accountctl
+  // need them (Path.home(), and systemctl --user's session addressing)
+  // and none of the three are secret — they're session-location info any
+  // process in this login session already has. Everything else (LD_PRELOAD,
+  // PYTHONPATH, etc.) is simply absent rather than inherited.
+  readonly property var minimalEnvironment: ({
+    PATH: root.trustedPath,
+    HOME: null,
+    XDG_RUNTIME_DIR: null,
+    DBUS_SESSION_BUS_ADDRESS: null
+  })
+
+  // Defensive cap on how much output either helper is allowed to produce,
+  // enforced incrementally as bytes arrive (BoundedCollector below, a thin
+  // SplitParser with splitMarker "" so every read() chunk reaches onRead
+  // immediately rather than being searched for a delimiter first) —
+  // exceeding it kills the process outright rather than just truncating
+  // what gets kept afterward. Neither helper script is expected to ever
+  // approach this; it exists for the case where one is somehow replaced or
+  // malfunctioning, not for a normal run.
   readonly property int maxCollectedChars: 65536
 
-  function capText(text) {
-    text = String(text || "")
-    return text.length > root.maxCollectedChars
-      ? text.substring(0, root.maxCollectedChars) + "…[truncated]"
-      : text
+  // Absolute ceiling on how long either helper may run at all, independent
+  // of output size — a process that's hung rather than noisy has nothing
+  // for the size cap above to catch. Both scripts already bound every
+  // individual rclone/systemctl call they make with their own short
+  // timeouts (3-30s), so this external deadline is a backstop for the
+  // outer python3 process itself, not the normal case.
+  readonly property int hardDeadlineMs: 30000
+
+  component BoundedCollector: SplitParser {
+    id: collector
+    property Process proc: null
+    property string text: ""
+    property bool killedForSize: false
+    splitMarker: ""
+    onRead: function(data) {
+      if (collector.killedForSize) return
+      collector.text += data
+      if (collector.text.length > root.maxCollectedChars) {
+        collector.text = collector.text.substring(0, root.maxCollectedChars) + "…[truncated, process killed]"
+        collector.killedForSize = true
+        if (collector.proc) collector.proc.signal(9)
+      }
+    }
+    function reset() {
+      collector.text = ""
+      collector.killedForSize = false
+    }
   }
 
   function setting(name, fallback) {
@@ -88,9 +127,9 @@ Item {
 
   function refresh() {
     if (statusProcess.running) return
-    _statusOutput = ""
-    _statusError = ""
-    statusProcess.command = [root.python3, root.pluginDir + "bin/googledrive-status"]
+    statusStdout.reset()
+    statusStderr.reset()
+    statusProcess.command = [root.python3, "-I", root.pluginDir + "bin/googledrive-status"]
     statusProcess.running = true
   }
 
@@ -168,9 +207,9 @@ Item {
   }
 
   function runControl(command) {
-    _controlOutput = ""
-    _controlError = ""
-    controlProcess.command = [root.python3, root.pluginDir + "bin/googledrive-accountctl"].concat(command)
+    controlStdout.reset()
+    controlStderr.reset()
+    controlProcess.command = [root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl"].concat(command)
     controlProcess.running = true
   }
 
@@ -201,31 +240,46 @@ Item {
     id: statusProcess
     running: false
     command: []
-    stdout: StdioCollector { id: statusStdout; waitForEnd: true; onStreamFinished: root._statusOutput = root.capText(text) }
-    stderr: StdioCollector { id: statusStderr; waitForEnd: true; onStreamFinished: root._statusError = root.capText(text) }
+    clearEnvironment: true
+    environment: root.minimalEnvironment
+    stdout: BoundedCollector { id: statusStdout; proc: statusProcess }
+    stderr: BoundedCollector { id: statusStderr; proc: statusProcess }
     onExited: function(exitCode) {
-      var stdout = String(statusStdout.text || root._statusOutput || "")
-      var stderr = String(statusStderr.text || root._statusError || "")
-      if (exitCode === 0) root.applyStatus(stdout)
-      else root.lastError = root.elide(stderr || stdout || "Could not read Google Drives status")
+      if (exitCode === 0) root.applyStatus(statusStdout.text)
+      else root.lastError = root.elide(statusStderr.text || statusStdout.text || "Could not read Google Drives status")
     }
+  }
+
+  Timer {
+    // Backstop for a hung (not just noisy) status check — see hardDeadlineMs.
+    interval: root.hardDeadlineMs
+    running: statusProcess.running
+    repeat: false
+    onTriggered: statusProcess.signal(9)
   }
 
   Process {
     id: controlProcess
     running: false
     command: []
-    stdout: StdioCollector { id: controlStdout; waitForEnd: true; onStreamFinished: root._controlOutput = root.capText(text) }
-    stderr: StdioCollector { id: controlStderr; waitForEnd: true; onStreamFinished: root._controlError = root.capText(text) }
+    clearEnvironment: true
+    environment: root.minimalEnvironment
+    stdout: BoundedCollector { id: controlStdout; proc: controlProcess }
+    stderr: BoundedCollector { id: controlStderr; proc: controlProcess }
     onExited: function(exitCode) {
-      var stdout = String(controlStdout.text || root._controlOutput || "")
-      var stderr = String(controlStderr.text || root._controlError || "")
       if (exitCode !== 0) {
-        root.lastError = root.elide(stderr || stdout || "Google Drives command failed")
+        root.lastError = root.elide(controlStderr.text || controlStdout.text || "Google Drives command failed")
         root.actionStatus = root.lastError
         actionStatusTimer.restart()
       }
       delayedRefresh.restart()
     }
+  }
+
+  Timer {
+    interval: root.hardDeadlineMs
+    running: controlProcess.running
+    repeat: false
+    onTriggered: controlProcess.signal(9)
   }
 }

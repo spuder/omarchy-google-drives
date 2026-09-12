@@ -219,7 +219,20 @@ included.
   never removing a file it didn't create.
 - `python3`, `rclone`, and `systemctl` are resolved from a fixed,
   trusted set of directories, not whatever `PATH` a calling process
-  happened to inherit.
+  happened to inherit; `python3` also runs with `-I` (isolated mode) and a
+  `clearEnvironment`-rebuilt environment that only passes through the four
+  variables the helpers actually need (`PATH` pinned to the trusted value
+  above, `HOME`/`XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` from the
+  session) — everything else (`LD_PRELOAD`, `PYTHONPATH`, etc.) is simply
+  absent rather than inherited.
+- Either helper process producing more than 64KB of output is killed
+  outright, the moment it happens — enforced incrementally as output
+  streams in, not after the fact — and a 30-second hard deadline kills a
+  hung one regardless of output size. See [PLAN.md](PLAN.md) for what this
+  does and doesn't cover (in particular: no process-group kill primitive
+  is available from Quickshell's QML API, so a helper's own already-spawned
+  child isn't taken down by killing the helper itself — bounded instead by
+  that child's own short timeout).
 - Revoke access any time from your
   [Google Account security page](https://myaccount.google.com/permissions).
 

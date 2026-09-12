@@ -306,19 +306,11 @@ all fixed:
   `/usr/bin/systemctl` hardcoded outright (as stable a path as exists on
   any systemd distro).
 - **Unbounded output collection.** The QML `StdioCollector` instances
-  retained complete stdout/stderr with no size cap. Added a 64KB
-  (`maxCollectedChars`) truncation in `Service.qml`'s `capText()`, applied
-  to all four collectors before the text is stored on `Item` properties.
-  Worth being precise about what this does and doesn't cover: Quickshell's
-  `StdioCollector` (with `waitForEnd: true`) buffers the entire stream
-  internally before `onStreamFinished` ever fires, so this bounds what
-  gets *propagated* into this plugin's own state, not the collector's own
-  peak memory while reading. A true pre-buffer cap would mean reading the
-  stream incrementally instead of collecting it whole — not done, since
-  both helper scripts only ever print a small, bounded amount by design
-  (one JSON status object, or a short status line); this exists as a
-  defensive ceiling against the unexpected, not a response to either
-  script actually approaching the limit.
+  retained complete stdout/stderr with no size cap. First pass: a 64KB
+  truncation applied after `StdioCollector`'s `onStreamFinished`. Correctly
+  called out as insufficient in round 2 below (`StdioCollector` had
+  already buffered the whole stream internally by that point) — see that
+  section for the actual fix.
 
 One unrelated bug caught while writing the collision-check fix, not from
 the review: `local name="$1" source="...$name" dest="...$name"` on one
@@ -327,3 +319,65 @@ line before any of that line's assignments take effect, so `$name` inside
 the same `local` statement it's being assigned in is still unbound.
 Reproduced directly, then split into two `local` statements in both
 `install.sh` and `uninstall.sh`.
+
+### Round 2: incremental output capping and environment isolation (2026-09-12)
+
+The first pass's `capText()` was accurately called out as treating the
+symptom, not the cause: `StdioCollector` (`waitForEnd: true`) buffers the
+*entire* stream internally before `onStreamFinished` fires, so truncating
+in that handler bounds only what gets copied into this plugin's own
+properties afterward, not Quickshell's own peak memory while reading. The
+absolute-path `python3` fix was also called out as incomplete: an absolute
+path pins *which* interpreter runs, not what environment it starts with —
+inherited `PYTHONPATH`/`PYTHONHOME`/`LD_PRELOAD`/etc. could still shape
+its startup.
+
+Checked Quickshell's actual `Quickshell.Io` source
+([process.hpp](https://github.com/quickshell-mirror/quickshell/blob/master/src/io/process.hpp),
+[datastream.hpp](https://github.com/quickshell-mirror/quickshell/blob/master/src/io/datastream.hpp))
+directly rather than guess at API that might not exist:
+
+- **Incremental capping.** `StdioCollector` isn't the only
+  `DataStreamParser` — `SplitParser` emits its `read(data)` signal per
+  chunk as data arrives, and setting `splitMarker: ""` makes it emit
+  immediately per raw read (no delimiter search, so nothing is held
+  waiting for one). `Service.qml` now defines `BoundedCollector`, a
+  `SplitParser` that accumulates into its own bounded `text` property and,
+  the moment `maxCollectedChars` (64KB) is exceeded, truncates *and calls
+  `proc.signal(9)`* on the owning `Process` — the process is killed
+  outright the instant it produces too much output, not just after the
+  fact.
+- **Hard deadline.** A `Timer` per `Process`, bound to that process's own
+  `running` property (so it restarts fresh on every invocation and cancels
+  itself if the process exits first), fires `proc.signal(9)` after
+  `hardDeadlineMs` (30s) regardless of output size — the size cap catches
+  a noisy process, this catches a hung one.
+- **Environment isolation.** `Process.clearEnvironment: true` rebuilds
+  each helper's environment from nothing rather than inheriting the shell
+  process's; `environment: minimalEnvironment` then passes through exactly
+  four variables — `PATH` (to our own trusted value, not the inherited
+  one), and `HOME`/`XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` as `null`
+  (Quickshell's `clearEnvironment` semantics: `null` means "pass the
+  system value through" instead of its normal "remove this"), because
+  `Path.home()` and `systemctl --user`'s session addressing need them and
+  none of the three are secret. Everything else — `LD_PRELOAD`,
+  `PYTHONPATH`, `PYTHONHOME`, etc. — is simply absent. `python3` also
+  gained `-I` (isolated mode: ignores `PYTHONPATH`/`PYTHONHOME`/user
+  site-packages/`.pth` files), closing the gap an absolute interpreter
+  path alone left open.
+
+**Honest gap, not silently dropped:** the reviewer specifically asked for
+"a hard deadline/process-tree cleanup." The deadline is real; process-tree
+cleanup is not, and can't be built from what `Quickshell.Io.Process`
+actually exposes — `signal()` targets only the tracked child PID, there's
+no process-group/session-kill primitive in the header. If `googledrive-
+status`/`googledrive-accountctl` had already spawned `rclone`/`systemctl`
+via a blocking `subprocess.run(..., timeout=N)` call at the exact moment
+the parent is killed, that grandchild isn't taken down by killing the
+parent — though every such call already carries its own short timeout
+(3-30s) that Python's own `subprocess` module enforces independently by
+killing the child itself on expiry, which bounds the exposure window
+regardless of the parent's fate. A true process-group kill would need
+launching the child into its own process group (e.g. via a `setsid`
+wrapper) and signaling the group, which isn't achievable through the QML
+API alone — flagged here rather than claimed as done.
