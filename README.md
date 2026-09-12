@@ -75,7 +75,8 @@ transfer and OAuth here — nothing custom.
   anything else exactly like any other folder. The panel's "open folder"
   action uses `xdg-open`, which resolves to whatever your session has
   actually registered as its default folder handler, rather than assuming
-  one.
+  one. Whether it's *pre-listed* in a sidebar without navigating to it
+  varies by file manager — see below.
 
 ## How the mount works, and its limits
 
@@ -102,6 +103,34 @@ you touched it, this plugin doesn't provide that (an earlier design pass
 considered layering `rclone bisync` on top for exactly that; see
 [PLAN.md](PLAN.md) for why that turned out to conflict with the disk-space
 goal badly enough to drop for v0.1).
+
+### Sidebar auto-listing depends on your file manager's toolkit
+
+Every mount is a real directory — any file manager can navigate to
+`~/GoogleDrive/<account>/` directly, no integration needed. Whether it
+shows up **pre-listed** in the sidebar without navigating there first is a
+different question, and it splits cleanly along one line: does the file
+manager use GTK's GIO/GVfs, or not.
+
+- **GIO/GVfs-based file managers — Nautilus, Strata, and others in that
+  family — list it automatically**, under a "Devices" section, the same
+  way they'd list a plugged-in USB drive. This isn't anything this plugin
+  does — GIO's volume monitor treats any live mount as first-class
+  (confirmed directly: `gio mount -l` shows every account here as a
+  `GProxyMount`), regardless of what backs it.
+- **Quickshell-based file managers — [Flea](https://github.com/thisisgm/flea),
+  specifically — don't hook into GIO at all**, so nothing shows up there
+  automatically, in any version. Versions before 0.2.0 also have no
+  bookmark/favorites mechanism of their own, so there's no workaround
+  short of navigating to the path directly. **Flea 0.2.0+** added one:
+  right-click the mounted folder and choose "Add to Favorites", or script
+  it:
+  ```sh
+  flea --favourites '{"op":"add","record":{"label":"<name>","path":"<mount path>"}}'
+  ```
+  (A plain absolute path is explicitly valid input — no special URI
+  scheme needed, since to Flea it's just an ordinary local directory once
+  mounted.)
 
 ## Configure
 
