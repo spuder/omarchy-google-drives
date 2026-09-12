@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # ExecStart for omarchy-google-drive-mount@<id>.service. All configuration
 # comes from the account's env file (GOOGLEDRIVE_REMOTE / _MOUNTPOINT /
 # _CONFIG, written by `googledrive-accountctl add`). Kept as a tiny wrapper
@@ -7,19 +7,22 @@
 # state.
 set -euo pipefail
 
-# Resolve rclone (and mkdir, below) from trusted system directories only,
+# Resolve rclone (and mkdir, below) from a trusted system directory only,
 # not whatever PATH this unit happened to inherit — a systemd user unit's
 # environment can be influenced by anything else that ran in the same
 # login session before it, and this is a persistent, auto-restarting
 # process, so pinning where it looks matters more than for a one-shot
-# command a human typed themselves.
-export PATH="/usr/bin:/usr/local/bin"
+# command a human typed themselves. /usr/local/bin isn't included: nothing
+# this script calls actually lives there, so it isn't trusted unverified.
+export PATH="/usr/bin"
+MKDIR=/usr/bin/mkdir
+RCLONE=/usr/bin/rclone
 
 : "${GOOGLEDRIVE_REMOTE:?GOOGLEDRIVE_REMOTE is not set}"
 : "${GOOGLEDRIVE_MOUNTPOINT:?GOOGLEDRIVE_MOUNTPOINT is not set}"
 : "${GOOGLEDRIVE_CONFIG:?GOOGLEDRIVE_CONFIG is not set}"
 
-mkdir -p "$GOOGLEDRIVE_MOUNTPOINT"
+"$MKDIR" -p "$GOOGLEDRIVE_MOUNTPOINT"
 
 # Why a mount instead of a full local copy: a real bidirectional sync
 # engine (rclone bisync) requires a complete local replica of everything
@@ -54,7 +57,7 @@ mkdir -p "$GOOGLEDRIVE_MOUNTPOINT"
 # FUSE already reports that user's own uid/gid by default with no flag
 # needed, which is exactly what a plain `ls -la` on the mount already
 # showed even while the flag was being rejected.
-exec rclone mount "${GOOGLEDRIVE_REMOTE}:" "$GOOGLEDRIVE_MOUNTPOINT" \
+exec "$RCLONE" mount "${GOOGLEDRIVE_REMOTE}:" "$GOOGLEDRIVE_MOUNTPOINT" \
   --config "$GOOGLEDRIVE_CONFIG" \
   --vfs-cache-mode=full \
   --vfs-cache-max-size="${GOOGLEDRIVE_CACHE_MAX_SIZE:-20G}" \

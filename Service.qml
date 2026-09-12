@@ -49,12 +49,15 @@ Item {
   // launched processes also run under clearEnvironment (see below), so
   // the executable's own identity and its environment are both pinned.
   readonly property string python3: "/usr/bin/python3"
-  // Includes Omarchy's own script directory (verified: this is where
+  // Omarchy's own script directory is included (verified: this is where
   // omarchy-launch-floating-terminal-with-presentation and the scripts it
   // sources in turn actually live) since beginAddAccount() below launches
   // it by absolute path but its own internal bare-name lookups still need
-  // this directory on PATH to resolve safely.
-  readonly property string trustedPath: "/usr/bin:/usr/local/bin:/usr/share/omarchy/bin"
+  // this directory on PATH to resolve safely. /usr/local/bin is
+  // deliberately not included: nothing anything here calls actually lives
+  // there, so it isn't trusted unverified just because it's a
+  // conventional-looking system directory.
+  readonly property string trustedPath: "/usr/bin:/usr/share/omarchy/bin"
 
   // Every python3 Process below runs with clearEnvironment: true — the
   // environment isn't just PATH-restricted, it's rebuilt from nothing and
@@ -77,15 +80,18 @@ Item {
   // Wider allowlist for the two detached GUI launches below (opening a
   // file manager, opening a terminal) — a real desktop app needs more than
   // the three session-location variables above to actually display
-  // itself. Verified directly on the machine this was written on, not
-  // guessed: ran `xdg-open`/`uwsm-app -- xdg-open` under exactly this
-  // allowlist (env -i plus these names) and confirmed the real default
-  // file manager opened successfully before relying on it here.
-  readonly property var desktopEnvironment: ({
-    PATH: root.trustedPath,
-    HOME: null,
-    XDG_RUNTIME_DIR: null,
-    DBUS_SESSION_BUS_ADDRESS: null,
+  // itself. Built on minimalEnvironment rather than repeating its four
+  // keys, so the two can't quietly drift apart the way the PATH value
+  // briefly did between the QML and shell-script sides of this same
+  // hardening pass. Verified directly on the machine this was written on,
+  // not guessed: ran `xdg-open`/`uwsm-app -- xdg-open` *and* rclone's own
+  // OAuth browser hand-off (`rclone config create ... drive`, the thing
+  // beginAddAccount() below actually triggers) under exactly this
+  // allowlist and confirmed both opened a real browser tab successfully —
+  // the first proves the "open folder" path, the second the higher-value
+  // "add account" path, which hadn't been checked when this allowlist was
+  // first written.
+  readonly property var desktopEnvironment: Object.assign({}, root.minimalEnvironment, {
     WAYLAND_DISPLAY: null,
     XDG_CURRENT_DESKTOP: null,
     XDG_DATA_DIRS: null,
@@ -102,13 +108,22 @@ Item {
   // malfunctioning, not for a normal run.
   readonly property int maxCollectedChars: 65536
 
-  // Absolute ceiling on how long either helper may run at all, independent
-  // of output size — a process that's hung rather than noisy has nothing
-  // for the size cap above to catch. Both scripts already bound every
-  // individual rclone/systemctl call they make with their own short
-  // timeouts (3-30s), so this external deadline is a backstop for the
-  // outer python3 process itself, not the normal case.
-  readonly property int hardDeadlineMs: 30000
+  // Ceiling for a single systemctl call (pause/resume/remove) — generous
+  // for one command, not scaled by account count the way the status
+  // deadline below is, since it only ever touches one account's unit.
+  readonly property int controlHardDeadlineMs: 15000
+
+  // Ceiling for a status refresh, independent of output size — a process
+  // that's hung rather than noisy has nothing for the size cap above to
+  // catch. Scales with account count rather than a single flat number:
+  // googledrive-status checks each account *sequentially*, and each one's
+  // own rclone/systemctl calls carry up to ~9s of timeout on their own
+  // (6s rclone about + 3s systemctl is-active) when a quota cache has
+  // expired. A flat 30s ceiling was close to being crossed by ordinary,
+  // non-hung use with only the 3 accounts this was tested against — worth
+  // padding per account rather than picking one fixed number and hoping
+  // it's never reached by legitimate work.
+  readonly property int statusHardDeadlineMs: Math.max(30000, accounts.length * 10000 + 10000)
 
   component BoundedCollector: SplitParser {
     id: collector
@@ -122,7 +137,10 @@ Item {
       if (collector.text.length > root.maxCollectedChars) {
         collector.text = collector.text.substring(0, root.maxCollectedChars) + "…[truncated, process killed]"
         collector.killedForSize = true
-        if (collector.proc) collector.proc.signal(9)
+        if (collector.proc) {
+          collector.proc.killed = true
+          collector.proc.signal(9)
+        }
       }
     }
     function reset() {
@@ -144,6 +162,26 @@ Item {
     return n
   }
 
+  function boolSetting(name, fallback) {
+    var value = setting(name, fallback)
+    if (typeof value === "boolean") return value
+    if (typeof value === "string") return value === "true"
+    return !!fallback
+  }
+
+  // manifest.json advertises both, but until now neither actually did
+  // anything: Panel.qml always rendered quota text regardless of
+  // showQuota, and MOUNT_ROOT was a hardcoded constant in
+  // googledrive-accountctl regardless of mountRoot. showQuota is read
+  // directly by Panel.qml now; mountRoot reaches googledrive-accountctl
+  // via GOOGLEDRIVE_MOUNT_ROOT in beginAddAccount()'s own environment
+  // below, the same way GOOGLEDRIVE_CACHE_MAX_SIZE already reaches
+  // googledrive-mount — an env var the script reads with its old
+  // hardcoded value as the fallback, so calling it directly from a
+  // terminal with no environment override still works exactly as before.
+  readonly property bool showQuota: boolSetting("showQuota", true)
+  readonly property string mountRoot: setting("mountRoot", "~/GoogleDrive")
+
   function displayActive(account) {
     var desired = root._desiredActive[account.id]
     return desired === undefined ? account.active : desired
@@ -153,6 +191,7 @@ Item {
     if (statusProcess.running) return
     statusStdout.reset()
     statusStderr.reset()
+    statusProcess.killed = false
     statusProcess.command = [root.python3, "-I", root.pluginDir + "bin/googledrive-status"]
     statusProcess.running = true
   }
@@ -233,7 +272,9 @@ Item {
         root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "add"
       ],
       clearEnvironment: true,
-      environment: root.desktopEnvironment
+      environment: Object.assign({}, root.desktopEnvironment, {
+        GOOGLEDRIVE_MOUNT_ROOT: root.mountRoot
+      })
     })
     delayedRefresh.restart()
   }
@@ -241,6 +282,7 @@ Item {
   function runControl(command) {
     controlStdout.reset()
     controlStderr.reset()
+    controlProcess.killed = false
     controlProcess.command = [root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl"].concat(command)
     controlProcess.running = true
   }
@@ -274,20 +316,38 @@ Item {
     command: []
     clearEnvironment: true
     environment: root.minimalEnvironment
+    // Set true by either kill path (the size cap in BoundedCollector, or
+    // the deadline Timer below) *before* signal(9) is sent, and checked in
+    // onExited before trusting anything the process produced. Quickshell's
+    // Process.exited(exitCode, exitStatus) signal does carry an exitStatus
+    // (crashed vs. normal exit), but this plugin doesn't rely on it —
+    // whether a killed process's exitCode reads as 0 is otherwise
+    // implementation-defined, and without this flag a killed
+    // googledrive-status (which prints its one JSON payload only at the
+    // very end of a run, so a mid-run kill leaves stdout empty) could read
+    // as a clean "ok:true, zero accounts" result and silently blank the
+    // panel's account list instead of showing an error.
+    property bool killed: false
     stdout: BoundedCollector { id: statusStdout; proc: statusProcess }
     stderr: BoundedCollector { id: statusStderr; proc: statusProcess }
     onExited: function(exitCode) {
-      if (exitCode === 0) root.applyStatus(statusStdout.text)
-      else root.lastError = root.elide(statusStderr.text || statusStdout.text || "Could not read Google Drives status")
+      if (exitCode === 0 && !statusProcess.killed) root.applyStatus(statusStdout.text)
+      else root.lastError = statusProcess.killed
+        ? "Status check took too long and was stopped"
+        : root.elide(statusStderr.text || statusStdout.text || "Could not read Google Drives status")
     }
   }
 
   Timer {
-    // Backstop for a hung (not just noisy) status check — see hardDeadlineMs.
-    interval: root.hardDeadlineMs
+    // Backstop for a hung (not just noisy) status check — see
+    // statusHardDeadlineMs, which scales with account count.
+    interval: root.statusHardDeadlineMs
     running: statusProcess.running
     repeat: false
-    onTriggered: statusProcess.signal(9)
+    onTriggered: {
+      statusProcess.killed = true
+      statusProcess.signal(9)
+    }
   }
 
   Process {
@@ -296,11 +356,14 @@ Item {
     command: []
     clearEnvironment: true
     environment: root.minimalEnvironment
+    property bool killed: false  // see statusProcess's matching property
     stdout: BoundedCollector { id: controlStdout; proc: controlProcess }
     stderr: BoundedCollector { id: controlStderr; proc: controlProcess }
     onExited: function(exitCode) {
-      if (exitCode !== 0) {
-        root.lastError = root.elide(controlStderr.text || controlStdout.text || "Google Drives command failed")
+      if (exitCode !== 0 || controlProcess.killed) {
+        root.lastError = controlProcess.killed
+          ? "That took too long and was stopped"
+          : root.elide(controlStderr.text || controlStdout.text || "Google Drives command failed")
         root.actionStatus = root.lastError
         actionStatusTimer.restart()
       }
@@ -309,9 +372,12 @@ Item {
   }
 
   Timer {
-    interval: root.hardDeadlineMs
+    interval: root.controlHardDeadlineMs
     running: controlProcess.running
     repeat: false
-    onTriggered: controlProcess.signal(9)
+    onTriggered: {
+      controlProcess.killed = true
+      controlProcess.signal(9)
+    }
   }
 }

@@ -40,11 +40,14 @@ UNIT_TEMPLATE = "omarchy-google-drive-mount@{id}.service"
 CACHE_TTL_SECONDS = 600
 
 # This script is launched automatically on a timer by the shell process,
-# not typed by a human each time — so `rclone` and `systemctl` are resolved
-# from a fixed, trusted set of directories rather than whatever PATH the
-# calling process happened to inherit (systemctl's location is standard
-# enough on any systemd distro to hardcode outright).
-TRUSTED_PATH = "/usr/bin:/usr/local/bin"
+# not typed by a human each time — so `rclone` is resolved from a fixed,
+# trusted directory rather than whatever PATH the calling process happened
+# to inherit, and `systemctl` is hardcoded outright (its location is
+# standard on any systemd distro). /usr/local/bin is deliberately not
+# included: nothing this script calls actually lives there, so it isn't
+# trusted unverified. Kept identical to googledrive-accountctl's own
+# TRUSTED_PATH/SYSTEMCTL — update both together if either changes.
+TRUSTED_PATH = "/usr/bin"
 SYSTEMCTL = "/usr/bin/systemctl"
 
 

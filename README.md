@@ -218,8 +218,13 @@ included.
   path that isn't its own prior symlink, and `uninstall.sh` mirrors that,
   never removing a file it didn't create.
 - `python3`, `rclone`, and `systemctl` are resolved from a fixed,
-  trusted set of directories, not whatever `PATH` a calling process
-  happened to inherit; `python3` also runs with `-I` (isolated mode) and a
+  trusted directory (`/usr/bin`, plus `/usr/share/omarchy/bin` for
+  Omarchy's own tools — never `/usr/local/bin`, which nothing here
+  actually uses), not whatever `PATH` a calling process happened to
+  inherit; `install.sh`/`uninstall.sh` use `#!/usr/bin/bash` directly
+  rather than `#!/usr/bin/env bash`, since `env` would itself resolve
+  `bash` through the caller's PATH before any of this plugin's own code
+  runs. `python3` also runs with `-I` (isolated mode) and a
   `clearEnvironment`-rebuilt environment that only passes through the four
   variables the helpers actually need (`PATH` pinned to the trusted value
   above, `HOME`/`XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` from the
@@ -227,9 +232,10 @@ included.
   absent rather than inherited.
 - Either helper process producing more than 64KB of output is killed
   outright, the moment it happens — enforced incrementally as output
-  streams in, not after the fact — and a 30-second hard deadline kills a
-  hung one regardless of output size. See [PLAN.md](PLAN.md) for what this
-  does and doesn't cover (in particular: no process-group kill primitive
+  streams in, not after the fact — and a hard deadline (scaled by account
+  count for the status check) kills a hung one regardless of output size.
+  See [PLAN.md](PLAN.md) for what this does and doesn't cover (in
+  particular: no process-group kill primitive
   is available from Quickshell's QML API, so a helper's own already-spawned
   child isn't taken down by killing the helper itself — bounded instead by
   that child's own short timeout).

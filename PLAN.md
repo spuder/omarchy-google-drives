@@ -451,3 +451,132 @@ binfmt_script handling, live, before relying on it) — otherwise
 `beginAddAccount()`'s terminal-launched `googledrive-accountctl` and
 `uninstall.sh`'s direct call would have bypassed isolated mode entirely
 depending on invocation path.
+
+### Round 4: a self-review, plus the maintainer's fourth pass (2026-09-12)
+
+Asked for a fresh read of the whole codebase for simplification/security/
+bugs before the marketplace review even got to round 4 — worth noting
+which findings came from which source, since two arrived independently
+and agreed:
+
+**Found first in the self-review, confirmed still worth fixing:**
+
+- **A killed status check could silently blank the account list instead
+  of showing an error.** `onExited(exitCode)` never inspected whether the
+  process had actually been killed by this plugin's own size-cap or
+  deadline timers (both call `signal(9)`) — only `exitCode`, which is
+  implementation-defined for a signal-killed process. `googledrive-status`
+  prints its one JSON payload only at the very end of a run, so a mid-run
+  kill leaves stdout empty; `Model.parseAccounts("")` returns `{ok: true,
+  accounts: []}` by design (a separate, correct, tested contract for its
+  own use case) — so a killed process whose `exitCode` happened to read 0
+  would have looked exactly like "no accounts configured." Fixed with an
+  explicit `killed` property on each `Process`, set by whichever kill path
+  fires *before* `signal(9)` is sent, and checked in `onExited` ahead of
+  trusting anything the process produced — deliberately not relying on
+  Quickshell's `exited(exitCode, exitStatus)` `exitStatus` parameter
+  instead, since this plugin has never confirmed how that enum is exposed
+  to QML and a second unverified API assumption wasn't worth trading for
+  the first.
+- **The 30s hard deadline didn't scale with account count.**
+  `googledrive-status` checks every account *sequentially*, each with up
+  to ~9s of its own timeout (6s `rclone about` + 3s `systemctl is-active`)
+  when a quota cache has expired. With the 3 real accounts this was
+  already tested against, a simultaneous cache-expiry refresh could
+  approach ~27s — uncomfortably close to a flat 30s kill threshold for
+  entirely legitimate work, and worse for anyone with more accounts.
+  Split into `controlHardDeadlineMs` (flat 15s, fine for pause/resume/
+  remove's single systemctl call) and `statusHardDeadlineMs`
+  (`Math.max(30000, accounts.length * 10000 + 10000)`).
+- **Confirm-to-remove could silently no-op.** `attemptRemove()` cleared
+  `confirmRemoveId` *before* calling `removeAccount()`, which itself
+  no-ops while another control action is in flight (`controlProcess.
+  running`) — click ✕ to confirm while a different account's pause/resume
+  was still running, and the removal was silently dropped with the
+  confirmation state already gone and no feedback at all. Fixed by
+  guarding `attemptRemove()` on `gdrive.busy` up front, and made the ✕
+  button itself `enabled: !gdrive.busy` (matching the `ToggleSwitch`'s own
+  busy-awareness, which it had never had) plus gave it the tooltip the
+  toggle already had and this button never did.
+- **`mountRoot`/`showQuota` in `manifest.json`'s settings schema did
+  nothing.** `Service.qml` only ever read `refreshIntervalSec`;
+  `MOUNT_ROOT` was a hardcoded constant in `googledrive-accountctl`
+  regardless of what `omarchy bar set ... mountRoot` was told, and nothing
+  checked `showQuota` before rendering usage text. Wired up properly
+  rather than deleted: `showQuota` is read directly in `Panel.qml` now
+  (falls back to the account's own `statusText` when off, rather than
+  going blank); `mountRoot` reaches `googledrive-accountctl` via a new
+  `GOOGLEDRIVE_MOUNT_ROOT` environment variable set in `beginAddAccount()`
+  — the same env-var-override pattern `GOOGLEDRIVE_CACHE_MAX_SIZE` already
+  used for `googledrive-mount` — so calling `add` directly from a
+  terminal, with no override present, behaves exactly as it always has.
+- **An unverified assumption about the single most important flow.** The
+  round-3 environment lockdown was applied to `beginAddAccount()` without
+  ever confirming the OAuth sign-in itself still worked under it — only
+  the simpler "open folder" `xdg-open` path had been checked. Verified
+  properly this time, live: ran `rclone config create ... drive
+  scope=drive config_is_local=true` under the exact `desktopEnvironment`
+  allowlist (a throwaway config path, killed after a few seconds, never
+  completed) and confirmed a real "Sign in - Google Accounts" browser tab
+  opened — `WAYLAND_DISPLAY` alone was sufficient; no `DISPLAY` (X11) or
+  `BROWSER` variable was needed. Also verified
+  `omarchy-launch-floating-terminal-with-presentation` itself opens a
+  terminal window correctly under the same allowlist. No code change
+  resulted from this one — it confirmed round 3's environment was already
+  sufficient — but it closes a real verification gap rather than an
+  actual defect, and is exactly the kind of check that should have
+  happened *before* round 3 shipped, not after.
+- Two lower-priority items addressed alongside the above:
+  `minimalEnvironment`/`desktopEnvironment` no longer duplicate four keys
+  verbatim (`desktopEnvironment` now builds on `minimalEnvironment` via
+  `Object.assign`); `googledrive-status`/`googledrive-accountctl`'s
+  identical `TRUSTED_PATH`/`SYSTEMCTL` constants gained an explicit
+  cross-file comment instead of a shared-module refactor, which would
+  have cost the "standalone, independently-runnable script" property this
+  project deliberately keeps; `Model.js`'s currently-unreachable
+  `aggregateState` fallback branch gained a comment explaining why it's
+  intentionally still there.
+
+**From the maintainer's fourth review pass, at commit `c9f7a42`, and
+correct:**
+
+- **The shebang itself resolves through the caller's `PATH`, before the
+  `env -i` re-exec guard ever runs.** `#!/usr/bin/env bash` means the
+  kernel's script loader runs `/usr/bin/env`, which resolves `bash`
+  through the *inherited* `PATH` — a shadowed `bash` earlier in it would
+  interpret this entire script, re-exec guard included, before any of
+  this plugin's own code executes. Fixed: `#!/usr/bin/bash` directly, no
+  `env` indirection, in `install.sh`, `uninstall.sh`, and
+  `googledrive-mount` (the Python helpers were already `#!/usr/bin/python3
+  -I`, a direct path with no equivalent gap).
+- **`/usr/local/bin` was kept in the trusted `PATH` sets without
+  verifying it belongs there, and several coreutils (`dirname`, `grep`,
+  `cat`, `rm`, `mkdir`, `rclone`) were still resolved by bare name through
+  it.** Checked directly: nothing this plugin calls, anywhere, actually
+  lives in `/usr/local/bin` on this system — dropped from every trusted
+  `PATH` value (QML and shell-script sides both) rather than kept and
+  unverified. Every remaining bare-name command in `install.sh`/
+  `uninstall.sh`/`googledrive-mount` now has an explicit hardcoded
+  absolute-path variable, not just the ones that cross a privilege
+  boundary.
+
+**Not fixed, on purpose, and worth deciding explicitly rather than by
+default:** the maintainer's fourth pass also asked to "prove that every
+directory and executable in that lookup path is root-owned and
+non-writable... or explicitly validate ownership/mode/ancestry before
+use." That's not implemented. Round 1's `ExecStart`-relocation fix (moving
+off `~/.local/bin`) protects against *accidental* collision with another
+tool sharing a generic namespace — it was never true protection against a
+genuinely malicious process already running as this user, since
+`~/.config/omarchy/plugins/spuder.googledrive/` is exactly as
+user-writable as `~/.local/bin` was. Stat-checking every ancestor
+directory of `/usr/bin`, `/usr/share/omarchy/bin`, etc. would be
+theater against that same actual threat model: arbitrary code execution
+as the user who owns this account can already rewrite any file that user
+owns, `.gitconfig` and this plugin's own source included, and Arch's
+package manager already guarantees system-directory ownership more
+reliably than an ad hoc stat check in a bash script would. Each round so
+far has found something real and worth fixing; this specific ask reads as
+the point where further hardening trades real value for the appearance of
+thoroughness. Flagged for a human decision rather than either silently
+skipped or silently implemented.
