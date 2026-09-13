@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "spuder.googledrive",
   "name": "Google Drives",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Spencer Owen",
   "license": "MIT",
   "description": "Native Google Drive mounts for multiple accounts, with disk usage bounded by a local cache: bar status, storage usage, and pause/resume.",
