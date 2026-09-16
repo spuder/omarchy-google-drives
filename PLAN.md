@@ -762,3 +762,84 @@ them too costs nothing and keeps one code path instead of two. `notify()`'s
 own `subprocess.run(..., capture_output=True)` for `notify-send` was left
 as-is: that output is `notify-send`'s own (local, not remote-derived), out
 of scope for what this finding was actually about.
+
+## Security self-review (2026-09-16)
+
+First run of a formal pre-submission checklist (repo contract, trust
+boundaries, command/argument safety, credential/local-data storage,
+network access, privilege/service/package changes, dependency/release
+supply chain, focused checks) rather than an ad-hoc pass — the checklist
+itself now lives once, at the user level, as the `omarchy-plugin-security-
+review` Claude Code skill, specifically so it applies to this repo, the
+sister Proton Drive plugin, and any future one without being copied and
+left to drift. See [SECURITY.md](SECURITY.md) for the short repo-facing
+summary and vulnerability-reporting contact this review also added — this
+repo had never had one.
+
+Audited at `5662bde76ad512549a54f75d1c9398ba3cc8d2d2` (current `master`,
+already covering rounds 1–4 above plus the logs/reconnect and bounded-
+subprocess-output rounds). No `sh -c`/`bash -c`/`eval`, no direct `sudo`/
+`pkexec`/`doas`, no direct package-manager or download calls anywhere in
+this plugin's own code (`git grep` for all of the above, verified empty
+except comments describing `omarchy-pkg-add`'s own internal `sudo pacman`,
+already delegated and documented) — every prior round's controls
+(argument arrays throughout, absolute paths, minimal environments, bounded
+subprocess output with process-group kills, atomic+exclusive temp files,
+`0700`/`0600` modes, symlink rejection on `accounts.json`) held up under
+the checklist's own search patterns, not just under memory of having built
+them.
+
+One real, if minor, finding: `googledrive-status`'s `load_cache()`/
+`save_cache()` (the per-account quota cache) had no symlink rejection,
+unlike `googledrive-accountctl`'s `accounts.json` reads/writes, which
+already reject a symlinked target. Not a privilege-boundary crossing
+(`Path.replace()` doesn't traverse a symlink to write through it, and
+reading through one here still only reaches this same user's own files),
+but the checklist is explicit — "reject symlinks and unexpected file types
+before overwriting sensitive paths" — and it costs nothing to match the
+existing pattern. Fixed and verified with an actual symlink-substitution
+test (swap the cache file for a symlink pointing at a planted "secret"
+file mid-run; confirm `load_cache()` returns `None` rather than reading
+through it, and `save_cache()` leaves both the symlink and its target
+byte-for-byte untouched rather than writing through it), not just read
+back.
+
+Everything else the checklist raised was either already true (network
+access is entirely delegated to `rclone`'s own HTTPS/OAuth, never a direct
+HTTP call from this plugin's own code — checked directly, no `urllib`/
+`requests`/`socket.` anywhere) or genuinely not applicable to a plugin
+this shape: no sudoers file, no GitHub Actions/CI to pin or scope, no
+lockfile or third-party dependency to audit (pure stdlib Python, bash, and
+QML — `rclone`/`fuse3` come from Arch's own repos via `omarchy-pkg-add`,
+already covered above), no clipboard use, no arbitrary-URL fetching to
+restrict a redirect/host allowlist on. `shellcheck` and `qmllint` aren't
+installed on this machine — noted rather than silently skipped, per the
+skill's own instruction; `bash -n`, `py_compile`, and the existing test
+suite all ran and passed.
+
+| Severity | Location | Data/control path | Impact | Verification |
+| --- | --- | --- | --- | --- |
+| Low (hardening) | `bin/googledrive-status`: `load_cache()`/`save_cache()` | A pre-placed symlink at `<id>/quota-cache.json`, followed on read/write | Locally-displayed quota numbers could reflect an arbitrary file's content; no privilege-boundary crossing | Symlink-substitution test: `load_cache()` returns `None`, `save_cache()` leaves the symlink and its target untouched — fixed |
+
+- Commands/tests run: the `git grep` patterns above; `bash -n` on all
+  shell scripts; `python3 -m py_compile` on both Python scripts;
+  `node --test test/model.test.js` (8/8); `test/status-fixture.sh`; the
+  real (non-`--demo`) `googledrive-status` against all three live
+  accounts on this machine; the symlink-substitution test above.
+- Not run: `shellcheck`, `qmllint` (neither installed on this machine);
+  `omarchy plugin validate .` (superseded here by the marketplace's own
+  automated validator, already passing at this SHA per issue #6454).
+- Fixed: the symlink-rejection finding above, with its own regression
+  test.
+- Remaining non-blocking capability, unchanged from round 4: this plugin
+  trusts every directory in its own closed `PATH`
+  (`/usr/bin:/usr/share/omarchy/bin`) without verifying each one's
+  ownership/mode — still a deliberate judgment call, not an oversight
+  (verifying that exceeds what file permissions can close given
+  code-execution-as-the-same-user is the actual threat ceiling here; see
+  round 4's own note).
+- Residual risk: identical to every prior round — this plugin runs as
+  unsandboxed code under the installing user's own account, same as any
+  Omarchy plugin; nothing in this review changes that ceiling.
+- Decision: **READY FOR SUBMISSION** at a new commit including the fix
+  above — no blocking finding remains.

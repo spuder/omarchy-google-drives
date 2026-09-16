@@ -232,6 +232,14 @@ def cache_path(account_id):
 
 def load_cache(account_id):
     path = cache_path(account_id)
+    # Same symlink rejection as googledrive-accountctl's accounts.json
+    # reads, added during a security self-review pass: reading through a
+    # pre-placed symlink here can't cross a privilege boundary (this is
+    # the same user's own directory either way) but it can feed
+    # arbitrary file content into json.loads() below as if it were this
+    # account's own cache, so it's rejected outright rather than trusted.
+    if path.is_symlink():
+        return None
     if not path.exists():
         return None
     try:
@@ -242,6 +250,8 @@ def load_cache(account_id):
 
 def save_cache(account_id, data):
     path = cache_path(account_id)
+    if path.exists() and path.is_symlink():
+        return  # see load_cache's matching comment; just skip the write
     # Exclusive, unpredictable temp name (see googledrive-accountctl's
     # atomic_write_accounts, which has the identical reasoning) rather
     # than a fixed ".json.tmp" — this is only quota numbers, not anything

@@ -233,7 +233,8 @@ local disk would either fail outright or silently fill the disk.)
 
 Omarchy plugins run **unsandboxed** with your user permissions — review
 `Service.qml` and the `bin/` scripts before enabling any plugin, this one
-included.
+included. See [SECURITY.md](SECURITY.md) for how to report a vulnerability
+and this repo's own pre-submission self-review process.
 
 - OAuth tokens live in rclone's own per-account config file
   (`~/.config/omarchy-google-drive/<id>/rclone.conf`, directory `0700`)
