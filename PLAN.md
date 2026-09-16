@@ -664,3 +664,55 @@ both horizontal and vertical bar forms ("a vertical bar should not merely
 rotate a long horizontal label") — this plugin's bar surface is a bare
 icon with no text label, so there's no long label to rotate incorrectly in
 the first place.
+
+## Logs, and an actual reconnect path (2026-09-15)
+
+Found live, on a real machine on public Wi-Fi, that this plugin had two
+real gaps once something actually went wrong: an account showing "Sign-in
+expired or network unreachable" had no path back to a working state short
+of knowing to run raw `rclone`/`systemctl` commands by hand, and there was
+no way to see *why* from the panel at all — `journalctl` has always had
+the answer (systemd already captures every mount unit's stdout/stderr),
+but nothing surfaced it or even hinted it existed.
+
+Diagnosed the actual live case first rather than guessing: all three
+mount units were active and serving files by the time this was looked at,
+but the unit logs showed `rclone[…]: INFO+2: Time may be set wrong - time
+from "www.googleapis.com" is -14m50s different from this computer` at
+boot the day before — a real, reproducible cause for exactly this kind of
+transient failure (a clock still catching up to NTP right after joining a
+new network breaks the TLS handshake OAuth needs) that self-heals once
+the clock settles, matching what had been described as "sometimes fixes
+itself."
+
+Added two new `googledrive-accountctl` subcommands rather than inventing
+a new mechanism — both are thin wrappers over tools this plugin already
+depends on:
+
+- **`logs <id> [-n LINES] [-f]`** — `journalctl --user -u
+  omarchy-google-drive-mount@<id>.service`, just without having to know
+  or type the unit name.
+- **`reauth <id>`** — `rclone config reconnect <id>: --config
+  <account's own rclone.conf>` (re-runs the OAuth exchange for the same
+  remote in place, unlike `add`, which refuses once an id already exists),
+  then `systemctl --user restart` that account's unit. Structured
+  identically to `cmd_add` (same terminal-hand-off rationale: this is
+  Google's own browser sign-in, never a form this plugin collects
+  credentials through).
+
+Wired both into `Service.qml` (`viewLogs()`/`reauthAccount()`, using the
+exact same floating-terminal `execDetached` pattern as `beginAddAccount()`
+— absolute paths, `clearEnvironment: true`, the same scoped
+`desktopEnvironment`) and into `Panel.qml`: a ↻ button that only appears
+on a row once `lastError` is actually set (nothing to reconnect on a
+healthy account, so it stays out of the way otherwise), a ≡ button that's
+always there, and `c`/`l` keyboard shortcuts alongside the existing
+`o`/`d`/`a`/`r`. README gained a "Troubleshooting a stuck account"
+subsection explaining what the generic error message actually covers, why
+it self-heals, and when reconnecting is (and isn't) the right move.
+
+Verified: `node --test test/model.test.js` (8/8), `test/status-fixture.sh`,
+`bash -n` on all shell scripts, `py_compile` on both Python scripts,
+`manifest.json` parses, and `googledrive-accountctl logs owenspencer -n 5`
+run for real against a live account on this machine — printed genuine
+`journalctl` output, including the clock-skew line above.
