@@ -51,10 +51,13 @@ import argparse
 import json
 import os
 import re
+import selectors
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 STATE_HOME = Path.home() / ".config" / "omarchy-google-drive"
@@ -72,6 +75,10 @@ ACCOUNTS_FILE = STATE_HOME / "accounts.json"
 TRUSTED_PATH = "/usr/bin"
 SYSTEMCTL = "/usr/bin/systemctl"
 JOURNALCTL = "/usr/bin/journalctl"
+# Combined stdout+stderr cap for run_bounded() below — see
+# googledrive-status's own copy of this constant/function for the full
+# reasoning; kept identical here on purpose, update both together.
+MAX_OUTPUT_BYTES = 262144
 # Overridable via GOOGLEDRIVE_MOUNT_ROOT, set by Service.qml's
 # beginAddAccount() from the plugin's "mountRoot" setting (manifest.json
 # schema) — the same env-var-override pattern GOOGLEDRIVE_CACHE_MAX_SIZE
@@ -218,6 +225,83 @@ def _require_rclone():
     return rclone
 
 
+def run_bounded(command, timeout, max_bytes=MAX_OUTPUT_BYTES):
+    """Run `command`, returning (exit_code, stdout_text, stderr_text) with
+    combined output hard-capped at max_bytes. See googledrive-status's
+    identical copy of this function for the full reasoning (remote-derived
+    output — `rclone about`, here used to verify a fresh sign-in — must
+    not be able to grow this process's memory past a fixed bound just
+    because subprocess.run(..., capture_output=True) would otherwise
+    buffer all of it up front); kept as an exact duplicate on purpose so
+    the two scripts don't depend on each other, matching TRUSTED_PATH/
+    SYSTEMCTL above — update all three together."""
+    try:
+        proc = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError:
+        return 1, "", ""
+
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ, "stdout")
+    sel.register(proc.stderr, selectors.EVENT_READ, "stderr")
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    total = 0
+    tripped = False
+    deadline = time.monotonic() + timeout
+    open_streams = 2
+
+    while open_streams > 0:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            tripped = True
+            break
+        for key, _ in sel.select(timeout=min(remaining, 0.5)):
+            chunk = key.fileobj.read(65536)
+            if not chunk:
+                sel.unregister(key.fileobj)
+                open_streams -= 1
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                tripped = True
+                break
+            buffers[key.data].extend(chunk)
+        if tripped:
+            break
+    sel.close()
+
+    if tripped:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        exit_code = 1
+    else:
+        try:
+            exit_code = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            exit_code = 1
+
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+    proc.stdout.close()
+    proc.stderr.close()
+
+    return (
+        exit_code,
+        buffers["stdout"].decode("utf-8", "replace"),
+        buffers["stderr"].decode("utf-8", "replace"),
+    )
+
+
 def cmd_add(args):
     rclone = _require_rclone()  # fail before asking anything, not after
 
@@ -266,13 +350,13 @@ def cmd_add(args):
 
     print()
     print("Verifying the connection...")
-    about = subprocess.run(
+    about_code, about_stdout, about_stderr = run_bounded(
         [rclone, "about", f"{account_id}:", "--config", str(config_path), "--json"],
-        capture_output=True, text=True, timeout=30,
+        timeout=30,
     )
-    if about.returncode != 0:
+    if about_code != 0:
         shutil.rmtree(account_dir, ignore_errors=True)
-        detail = (about.stderr or about.stdout or "").strip()
+        detail = (about_stderr or about_stdout or "").strip()
         notify("Google Drive sign-in failed", email, urgency="critical")
         fail(f"sign-in did not verify, nothing was saved. rclone said:\n  {detail or 'unknown error'}")
 

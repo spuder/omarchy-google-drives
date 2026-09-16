@@ -29,7 +29,9 @@ config or rclone.
 import configparser
 import json
 import os
+import selectors
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -51,6 +53,13 @@ CACHE_TTL_SECONDS = 600
 # TRUSTED_PATH/SYSTEMCTL — update both together if either changes.
 TRUSTED_PATH = "/usr/bin"
 SYSTEMCTL = "/usr/bin/systemctl"
+# Combined stdout+stderr cap for run_bounded() below — `rclone about --json`
+# returns a small object (order of hundreds of bytes) and systemctl's own
+# output is similarly tiny, so this is generous headroom, not a tight
+# budget; it exists so a malicious or malfunctioning remote genuinely
+# cannot grow this process's memory past a fixed bound, matching
+# Service.qml's BoundedCollector on the QML side of the same boundary.
+MAX_OUTPUT_BYTES = 262144
 
 
 def demo_payload():
@@ -87,14 +96,94 @@ def demo_payload():
     }
 
 
-def command_output(command, timeout=4):
+def run_bounded(command, timeout, max_bytes=MAX_OUTPUT_BYTES):
+    """Run `command`, returning (exit_code, stdout_text, stderr_text) with
+    combined output hard-capped at max_bytes.
+
+    subprocess.run(..., capture_output=True) buffers the child's entire
+    stdout/stderr before this process ever looks at it — for a call whose
+    output is remote-derived (`rclone about` talking to Drive's API), a
+    malicious or just malfunctioning remote/rclone response could grow
+    that buffer arbitrarily before anything here gets a chance to bound
+    it. This reads both pipes incrementally instead, tripping the same
+    kill path as the timeout the moment the combined total crosses
+    max_bytes. The child also runs in its own process group
+    (start_new_session=True) specifically so that kill reaches anything
+    it spawned in turn, not just the one PID Popen hands back — plain
+    subprocess.run(..., timeout=...)'s own timeout kill only ever signals
+    the direct child. Used for every call whose output either comes from
+    a remote (rclone) or isn't otherwise bounded by the caller.
+    """
     try:
-        completed = subprocess.run(
-            command, check=False, capture_output=True, text=True, timeout=timeout
+        proc = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return 1, ""
-    return completed.returncode, (completed.stdout or "").strip()
+    except OSError:
+        return 1, "", ""
+
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ, "stdout")
+    sel.register(proc.stderr, selectors.EVENT_READ, "stderr")
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    total = 0
+    tripped = False
+    deadline = time.monotonic() + timeout
+    open_streams = 2
+
+    while open_streams > 0:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            tripped = True
+            break
+        for key, _ in sel.select(timeout=min(remaining, 0.5)):
+            chunk = key.fileobj.read(65536)
+            if not chunk:
+                sel.unregister(key.fileobj)
+                open_streams -= 1
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                tripped = True
+                break
+            buffers[key.data].extend(chunk)
+        if tripped:
+            break
+    sel.close()
+
+    if tripped:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        exit_code = 1
+    else:
+        try:
+            exit_code = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            exit_code = 1
+
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+    proc.stdout.close()
+    proc.stderr.close()
+
+    return (
+        exit_code,
+        buffers["stdout"].decode("utf-8", "replace"),
+        buffers["stderr"].decode("utf-8", "replace"),
+    )
+
+
+def command_output(command, timeout=4):
+    exit_code, stdout, _stderr = run_bounded(command, timeout)
+    return exit_code, stdout.strip()
 
 
 def load_accounts():
