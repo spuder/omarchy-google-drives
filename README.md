@@ -142,6 +142,32 @@ manager use GTK's GIO/GVfs, or not.
   scheme needed, since to Flea it's just an ordinary local directory once
   mounted.)
 
+### Troubleshooting a stuck account
+
+An account row showing **"Sign-in expired or network unreachable"** is one
+message covering two different causes that look identical from the
+outside — a live check (`rclone about`) either failing to reach Google at
+all, or reaching it and being told the sign-in is no longer valid. Only a
+successful check is cached (10 minutes); a failed one is always retried on
+the next panel refresh (every `refreshIntervalSec`, 30s by default), so:
+
+- **If it clears itself within a refresh or two, it was transient** — a
+  Wi-Fi captive portal, a DNS hiccup, or (seen directly while writing this)
+  the system clock still catching up to NTP right after joining a new
+  network, which briefly breaks the TLS handshake Google's OAuth needs.
+  Nothing to do.
+- **If it's still showing after a minute or two, the sign-in has actually
+  lapsed** — most often Google revoking the token after long inactivity,
+  or you removed this app's access under your Google Account's Security →
+  Third-party access page. Click the **↻** that appears on that row (or
+  press `c` with it selected, or run `googledrive-accountctl reauth <id>`)
+  to sign in again; nothing else about the account changes.
+- **Either way, click ≡ on that row** (or press `l`, or run
+  `googledrive-accountctl logs <id> -f`) to see that account's own
+  `rclone mount` log — the same thing `journalctl --user -u
+  omarchy-google-drive-mount@<id>.service -f` shows, just without having
+  to know the unit name.
+
 ## Configure
 
 Settings are stored inline with the widget entry in
@@ -171,6 +197,8 @@ googledrive-accountctl add alice@gmail.com     # opens rclone's browser sign-in,
 googledrive-accountctl pause alice              # unmount
 googledrive-accountctl resume alice             # mount again
 googledrive-accountctl remove alice             # forget the account (keeps local files)
+googledrive-accountctl reauth alice             # sign in again after an expired/revoked token
+googledrive-accountctl logs alice -f            # follow that account's mount-unit log
 
 systemctl --user status omarchy-google-drive-mount@alice.service
 journalctl --user -u omarchy-google-drive-mount@alice.service -f
@@ -180,6 +208,10 @@ The id (`alice` above) is derived from the part of the email before `@`,
 sanitized and de-duplicated automatically — `googledrive-accountctl list`
 shows you the id it actually picked. Override it with `--id` on `add` if
 you want something else.
+
+See [Troubleshooting a stuck account](#troubleshooting-a-stuck-account) for
+what "Sign-in expired or network unreachable" means and when `reauth`
+above is (and isn't) the fix.
 
 ## Related
 
