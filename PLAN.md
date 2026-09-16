@@ -716,3 +716,49 @@ Verified: `node --test test/model.test.js` (8/8), `test/status-fixture.sh`,
 `manifest.json` parses, and `googledrive-accountctl logs owenspencer -n 5`
 run for real against a live account on this machine — printed genuine
 `journalctl` output, including the clock-skew line above.
+
+## Bounded subprocess output, and process-group kills (2026-09-16)
+
+@HANCORE-linux's next review, still at the validated `323509a` snapshot:
+`googledrive-status`'s `command_output()` and `googledrive-accountctl`'s
+add-verification call both used `subprocess.run(...,
+capture_output=True)` for `rclone about` — which buffers the entire child
+stdout/stderr in this process's memory before anything looks at it. Since
+that output is remote-derived (Drive's own API response, reached through
+rclone), a malicious or malfunctioning remote could grow that buffer
+arbitrarily before any cap applied — the QML-side `BoundedCollector` only
+bounds the Python helper's own eventual JSON output, not this. Separately,
+`subprocess.run(..., timeout=...)`'s own timeout only signals the one PID
+it started directly, not anything that process spawned in turn.
+
+Real finding, fixed in both scripts with an identical `run_bounded()`
+(duplicated on purpose, matching the existing TRUSTED_PATH/SYSTEMCTL
+duplication — the two scripts don't import from each other):
+
+- Reads both pipes incrementally via `selectors`, not
+  `capture_output=True`'s all-at-once buffering — a `256 KiB` combined cap
+  (`MAX_OUTPUT_BYTES`; `rclone about --json`'s actual response is a few
+  hundred bytes, so this is headroom, not a tight budget) trips the same
+  kill path as the deadline.
+- The child runs in its own process group (`start_new_session=True`), so
+  a byte-cap trip or deadline kills with `os.killpg`, reaching the whole
+  group rather than one PID.
+
+Verified, not just read about: a hanging child gets killed within the
+timeout; a "malicious remote" (`yes | head -c 5000000`) piped through the
+runner with a 1 KiB cap is capped and killed rather than buffered in
+full; a grandchild process (bash spawning a backgrounded `sleep 30`) is
+confirmed gone (`pgrep`, not just "the call returned quickly") after the
+parent is killed — proving the group-kill actually reaches it, not just
+the direct child. Then ran the real (non-`--demo`) `googledrive-status`
+against all three live accounts on this machine — identical output to
+before the change.
+
+`command_output()` (used by both the `rclone about` calls and
+`unit_active()`'s local `systemctl is-active`) was rebuilt on top of
+`run_bounded()` uniformly rather than only where the reviewer's line
+numbers pointed — the systemctl calls aren't remote-derived, but bounding
+them too costs nothing and keeps one code path instead of two. `notify()`'s
+own `subprocess.run(..., capture_output=True)` for `notify-send` was left
+as-is: that output is `notify-send`'s own (local, not remote-derived), out
+of scope for what this finding was actually about.
