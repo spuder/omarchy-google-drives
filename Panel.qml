@@ -193,6 +193,8 @@ Panel {
           if (account) gdrive.openMountFolder(account)
         }
         else if (t === "d" || t === "D") root.attemptRemove(root.selectedAccount())
+        else if (t === "l" || t === "L") gdrive.viewLogs(root.selectedAccount())
+        else if (t === "c" || t === "C") gdrive.reauthAccount(root.selectedAccount())
       }
 
       Flickable {
@@ -271,7 +273,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "Click a drive, or select it and press o, to open its folder. Press d twice to remove one."
+              text: "Click a drive, or select it and press o, to open its folder. l for logs, c to reconnect, d twice to remove."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -435,6 +437,39 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
+        }
+      }
+
+      PanelActionButton {
+        // Only shown once there's actually an error to act on — a healthy,
+        // signed-in account has nothing to reconnect, so this stays out of
+        // the way rather than sitting there doing nothing on every row.
+        iconText: "↻"
+        visible: accountRow.account && accountRow.account.lastError !== ""
+        foreground: root.urgent
+        fontFamily: root.fontFamily
+        enabled: !gdrive.busy
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: gdrive.reauthAccount(accountRow.account)
+
+        PanelToolTip {
+          visible: parent.containsMouse
+          text: "Reconnect (opens a sign-in terminal)"
+          fontFamily: root.fontFamily
+        }
+      }
+
+      PanelActionButton {
+        iconText: "≡"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: gdrive.viewLogs(accountRow.account)
+
+        PanelToolTip {
+          visible: parent.containsMouse
+          text: "View logs"
+          fontFamily: root.fontFamily
         }
       }
 

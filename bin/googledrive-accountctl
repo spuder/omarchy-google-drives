@@ -71,6 +71,7 @@ ACCOUNTS_FILE = STATE_HOME / "accounts.json"
 # if either changes.
 TRUSTED_PATH = "/usr/bin"
 SYSTEMCTL = "/usr/bin/systemctl"
+JOURNALCTL = "/usr/bin/journalctl"
 # Overridable via GOOGLEDRIVE_MOUNT_ROOT, set by Service.qml's
 # beginAddAccount() from the plugin's "mountRoot" setting (manifest.json
 # schema) — the same env-var-override pattern GOOGLEDRIVE_CACHE_MAX_SIZE
@@ -346,6 +347,62 @@ def cmd_resume(args):
     _control(args, "start", "resumed")
 
 
+def cmd_logs(args):
+    accounts = load_accounts()
+    if not find_account(accounts, args.id):
+        fail(f"no such account: {args.id}")
+    unit = UNIT_TEMPLATE.format(id=args.id)
+    # journalctl itself, not a copy of its output — this only ever runs in
+    # a real terminal a human is watching (same floating-terminal launch as
+    # `add`/`reauth`), so there's no captured-output parsing here to worry
+    # about spoofing the way there is for the panel's own status polling.
+    command = [JOURNALCTL, "--user", "-u", unit, "-n", str(args.lines)]
+    if args.follow:
+        command.append("-f")
+    sys.exit(subprocess.call(command))
+
+
+def cmd_reauth(args):
+    rclone = _require_rclone()
+    accounts = load_accounts()
+    entry = find_account(accounts, args.id)
+    if not entry:
+        fail(f"no such account: {args.id}")
+    account_id = args.id
+    email = entry.get("displayName", account_id)
+    config_path = STATE_HOME / account_id / "rclone.conf"
+    if not config_path.exists():
+        fail(f"no saved config for '{account_id}' — remove it and run 'add' again")
+
+    print()
+    print(f"Reconnecting {email}.")
+    print("This is rclone's own browser sign-in again — a browser window will open")
+    print("(or a link will be printed below) asking you to re-approve access.")
+    print()
+
+    # `config reconnect`, not `config create`: it re-runs the OAuth exchange
+    # for the same remote in place, so the account keeps its existing id,
+    # mount path, and accounts.json entry — nothing else about it changes.
+    reconnect_result = subprocess.run(
+        [rclone, "config", "reconnect", f"{account_id}:", "--config", str(config_path)],
+    )
+    if reconnect_result.returncode != 0:
+        notify("Google Drive reconnect failed", email, urgency="critical")
+        fail("Reconnect was not completed")
+
+    unit = UNIT_TEMPLATE.format(id=account_id)
+    print()
+    print("Reconnected. Restarting the mount...")
+    restart_result = subprocess.run([SYSTEMCTL, "--user", "restart", unit])
+    if restart_result.returncode == 0:
+        print("Done.")
+        notify("Google Drive reconnected", email)
+    else:
+        print("Reconnected, but the mount didn't restart cleanly — check with:")
+        print(f"  systemctl --user status {unit}")
+        notify("Google Drive reconnected, restart failed", email, urgency="critical")
+
+
 def main():
     parser = argparse.ArgumentParser(prog="googledrive-accountctl")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -369,6 +426,16 @@ def main():
     p_resume = sub.add_parser("resume", help="start an account's mount unit")
     p_resume.add_argument("id")
     p_resume.set_defaults(func=cmd_resume)
+
+    p_logs = sub.add_parser("logs", help="show an account's mount-unit log (journalctl)")
+    p_logs.add_argument("id")
+    p_logs.add_argument("-n", "--lines", type=int, default=200, help="number of lines to show (default: 200)")
+    p_logs.add_argument("-f", "--follow", action="store_true", help="keep streaming new log lines")
+    p_logs.set_defaults(func=cmd_logs)
+
+    p_reauth = sub.add_parser("reauth", help="re-run browser sign-in for an account whose token has expired")
+    p_reauth.add_argument("id")
+    p_reauth.set_defaults(func=cmd_reauth)
 
     args = parser.parse_args()
     args.func(args)

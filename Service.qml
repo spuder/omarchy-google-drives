@@ -279,6 +279,42 @@ Item {
     delayedRefresh.restart()
   }
 
+  // Opens a real terminal streaming that account's mount-unit log
+  // (`journalctl --user -u ... -f`) — a floating terminal rather than an
+  // in-panel log view because the panel is a lightweight status dropdown,
+  // not somewhere to scroll/search real logs, and because journalctl
+  // already does that job well on its own; no reason to re-render its
+  // output inside QML instead of just running it.
+  function viewLogs(account) {
+    if (!account) return
+    Quickshell.execDetached({
+      command: [
+        "/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation",
+        root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "logs", account.id, "--follow"
+      ],
+      clearEnvironment: true,
+      environment: root.desktopEnvironment
+    })
+  }
+
+  // Re-runs Google's browser OAuth for an account whose token has expired
+  // or been revoked, in place — same rationale as beginAddAccount() for why
+  // this needs a real terminal rather than an in-panel form: it's rclone's
+  // own browser hand-off, not something this plugin collects credentials
+  // for itself.
+  function reauthAccount(account) {
+    if (!account) return
+    Quickshell.execDetached({
+      command: [
+        "/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation",
+        root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "reauth", account.id
+      ],
+      clearEnvironment: true,
+      environment: root.desktopEnvironment
+    })
+    delayedRefresh.restart()
+  }
+
   function runControl(command) {
     controlStdout.reset()
     controlStderr.reset()
