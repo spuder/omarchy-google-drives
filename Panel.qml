@@ -230,10 +230,10 @@ Panel {
 
           Text {
             textFormat: Text.PlainText
-            visible: !gdrive.rcloneInstalled
+            visible: !gdrive.setupComplete
             width: parent.width
-            text: "rclone is not installed — run the install script, then add an account."
-            color: root.urgent
+            text: "First-time setup: adding an account also installs rclone and fuse3 (asks for your password once)."
+            color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap

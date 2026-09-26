@@ -9,6 +9,11 @@ test("parseAccounts handles empty input without throwing", () => {
   assert.deepEqual(result.accounts, [])
 })
 
+test("parseAccounts treats a missing setupComplete as incomplete", () => {
+  assert.equal(Model.parseAccounts(JSON.stringify({ ok: true, accounts: [] })).setupComplete, false)
+  assert.equal(Model.parseAccounts(JSON.stringify({ ok: true, setupComplete: true, accounts: [] })).setupComplete, true)
+})
+
 test("parseAccounts rejects malformed JSON with lastError set", () => {
   const result = Model.parseAccounts("{not json")
   assert.equal(result.ok, false)

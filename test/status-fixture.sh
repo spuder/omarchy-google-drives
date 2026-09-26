@@ -24,6 +24,7 @@ check "valid JSON" "0" "$?"
 echo "2. demo payload has the expected shape"
 check "ok is true" "True" "$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ok"])')"
 check "rcloneInstalled is true" "True" "$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rcloneInstalled"])')"
+check "setupComplete is true" "True" "$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["setupComplete"])')"
 check "two demo accounts" "2" "$(echo "$out" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["accounts"]))')"
 check "first account id" "personal" "$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["accounts"][0]["id"])')"
 
@@ -33,6 +34,7 @@ trap 'rm -rf "$empty_home"' EXIT
 out2="$(HOME="$empty_home" python3 "$STATUS")"
 echo "$out2" | python3 -c 'import json,sys; json.load(sys.stdin)' >/dev/null 2>&1
 check "valid JSON with no config" "0" "$?"
+check "setupComplete false with no systemd template" "False" "$(echo "$out2" | python3 -c 'import json,sys; print(json.load(sys.stdin)["setupComplete"])')"
 check "empty accounts with no config" "0" "$(echo "$out2" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["accounts"]))')"
 
 if (( fails > 0 )); then

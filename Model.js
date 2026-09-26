@@ -12,6 +12,7 @@ function parseAccounts(raw) {
     if (!parsed || typeof parsed !== "object") return defaultResult()
     parsed.accounts = Array.isArray(parsed.accounts) ? parsed.accounts.map(normalizeAccount) : []
     if (typeof parsed.rcloneInstalled !== "boolean") parsed.rcloneInstalled = false
+    if (typeof parsed.setupComplete !== "boolean") parsed.setupComplete = false
     if (typeof parsed.ok !== "boolean") parsed.ok = true
     return parsed
   } catch (e) {
@@ -39,7 +40,7 @@ function normalizeAccount(account) {
 }
 
 function defaultResult() {
-  return { ok: true, rcloneInstalled: false, accounts: [], lastError: "" }
+  return { ok: true, rcloneInstalled: false, setupComplete: false, accounts: [], lastError: "" }
 }
 
 // Aggregate state across every configured account, for the bar icon/tooltip:

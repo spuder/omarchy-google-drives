@@ -3,7 +3,13 @@
 
 Prints one JSON object on stdout, shaped for Model.js's parseAccounts():
 
-    {"ok": true, "rcloneInstalled": bool, "accounts": [...], "lastError": ""}
+    {"ok": true, "rcloneInstalled": bool, "setupComplete": bool,
+     "accounts": [...], "lastError": ""}
+
+setupComplete is everything install.sh puts in place — rclone, fuse3's
+fusermount3, and the systemd user template. `omarchy plugin add` has no
+post-install hook, so the panel uses this to decide whether its first
+"Add account" click has to run install.sh before signing in.
 
 Each account comes from ~/.config/omarchy-google-drive/accounts.json
 (written by googledrive-accountctl) plus two checks: whether its systemd
@@ -66,6 +72,7 @@ def demo_payload():
     return {
         "ok": True,
         "rcloneInstalled": True,
+        "setupComplete": True,
         "accounts": [
             {
                 "id": "personal",
@@ -353,6 +360,15 @@ def account_status(rclone_path, entry):
     return result
 
 
+def setup_complete(rclone_path):
+    unit = Path.home() / ".config" / "systemd" / "user" / "omarchy-google-drive-mount@.service"
+    return (
+        rclone_path is not None
+        and shutil.which("fusermount3", path=TRUSTED_PATH) is not None
+        and unit.is_file()
+    )
+
+
 def main():
     if "--demo" in sys.argv[1:]:
         print(json.dumps(demo_payload()))
@@ -365,6 +381,7 @@ def main():
     print(json.dumps({
         "ok": True,
         "rcloneInstalled": rclone_path is not None,
+        "setupComplete": setup_complete(rclone_path),
         "accounts": accounts,
         "lastError": "",
     }))
