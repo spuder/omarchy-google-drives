@@ -69,8 +69,17 @@ set -euo pipefail
 # Everything else (packages, helper symlinks, systemd template) runs the
 # same either way: each step is idempotent, and re-running all of them
 # also repairs a half-finished earlier install.
+# Unknown arguments are rejected rather than ignored: a typo'd
+# --from-panel would otherwise silently do a full run, enable included.
 FROM_PANEL=0
-[[ "${1:-}" == "--from-panel" ]] && FROM_PANEL=1
+THEN_SIGN_IN=0
+for arg in "$@"; do
+  case "$arg" in
+    --from-panel) FROM_PANEL=1 ;;
+    --then-sign-in) THEN_SIGN_IN=1 ;;
+    *) echo "install.sh: unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
 
 # Named absolute paths for every command this script calls by bare name
 # otherwise, not just the ones that cross a privilege boundary — the
@@ -129,7 +138,7 @@ echo "Installing the per-account systemd user template..."
 "$SYSTEMCTL" --user daemon-reload
 
 if (( FROM_PANEL )); then
-  if [[ "${2:-}" == "--then-sign-in" ]]; then
+  if (( THEN_SIGN_IN )); then
     echo
     echo "Setup complete. Continuing to Google sign-in..."
     echo

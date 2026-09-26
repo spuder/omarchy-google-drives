@@ -129,6 +129,9 @@ Panel {
   onOpenedChanged: if (opened) {
     cursorActive = false
     confirmRemoveId = ""
+    // Start the cursor on "Finish setup" while it's showing: nothing else
+    // in the panel works until it's done.
+    if (showInstall) focusSection = "install"
     gdrive.refresh()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -148,6 +151,11 @@ Panel {
   Connections {
     target: gdrive
     function onAccountsChanged() { root.ensureCursor() }
+    // Explicit, not left to onAccountsChanged happening to fire after
+    // these in applyStatus(): the "Finish setup" row can vanish while the
+    // cursor is on it, and Enter must not then land on a hidden row.
+    function onSetupCompleteChanged() { root.ensureCursor() }
+    function onStatusLoadedChanged() { root.ensureCursor() }
   }
 
   IpcHandler {
@@ -313,8 +321,7 @@ Panel {
     }
   }
 
-  // Replaces what used to be a line telling you to run the install
-  // script with something that actually does it (issue #9):
+  // The "Finish setup" row (issue #9), shown while setup is incomplete:
   // clicking, Enter on it, or 'i' opens a floating terminal running
   // install.sh (see Service.qml's installDependencies() for why a terminal
   // and why only on an explicit action). Same shape as AddAccountButton

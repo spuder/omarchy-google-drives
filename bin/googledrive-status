@@ -8,8 +8,9 @@ Prints one JSON object on stdout, shaped for Model.js's parseAccounts():
 
 setupComplete is everything install.sh puts in place — rclone, fuse3's
 fusermount3, and the systemd user template. `omarchy plugin add` has no
-post-install hook, so the panel uses this to decide whether its first
-"Add account" click has to run install.sh before signing in.
+post-install hook, so the panel uses this both to show its "Finish setup"
+row and to decide whether "Add account" has to run install.sh before
+signing in.
 
 Each account comes from ~/.config/omarchy-google-drive/accounts.json
 (written by googledrive-accountctl) plus two checks: whether its systemd
