@@ -12,6 +12,8 @@
 # there, then hands off straight to sign-in. Running it directly still
 # works too, e.g. to repair a broken install:
 #   ~/.config/omarchy/plugins/spuder.googledrive/install.sh
+# The panel's "Finish setup" row runs it the same way without going on to
+# sign-in (see --from-panel below).
 # Safe to run from anywhere: everything below is relative to this script's
 # own directory, not the caller's.
 
@@ -54,9 +56,19 @@ fi
 
 set -euo pipefail
 
-# --from-panel: launched by the plugin's own "Add account" button, so the
-# widget is already enabled (skip omarchy-plugin-enable) and sign-in follows
-# immediately in the same terminal (skip the "now click the G icon" text).
+# --from-panel: launched by the panel itself, in a floating terminal, when
+# googledrive-status reports setup incomplete. The widget is necessarily
+# already enabled then, so omarchy-plugin-enable is skipped, and so is the
+# "click the new G icon" text, since the user is already looking at it.
+# Two callers, told apart by --then-sign-in:
+#   - "Add a Google Drive account" (beginAddAccount() in Service.qml) passes
+#     --then-sign-in and chains googledrive-accountctl add after this in
+#     the same terminal, so the closing text just says sign-in is next.
+#   - The "Finish setup" row (installDependencies()) doesn't, so the
+#     closing text points back to the panel instead.
+# Everything else (packages, helper symlinks, systemd template) runs the
+# same either way: each step is idempotent, and re-running all of them
+# also repairs a half-finished earlier install.
 FROM_PANEL=0
 [[ "${1:-}" == "--from-panel" ]] && FROM_PANEL=1
 
@@ -117,9 +129,19 @@ echo "Installing the per-account systemd user template..."
 "$SYSTEMCTL" --user daemon-reload
 
 if (( FROM_PANEL )); then
-  echo
-  echo "Setup complete. Continuing to Google sign-in..."
-  echo
+  if [[ "${2:-}" == "--then-sign-in" ]]; then
+    echo
+    echo "Setup complete. Continuing to Google sign-in..."
+    echo
+    exit 0
+  fi
+  "$CAT" <<MSG
+
+Installed. Reopen the Google Drives panel (or wait for its next refresh)
+and choose "Add a Google Drive account". If an account you had already
+added shows as stopped, pause and resume it once in the panel to remount it.
+
+MSG
   exit 0
 fi
 

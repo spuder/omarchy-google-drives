@@ -221,7 +221,7 @@ def prompt(label, default=None):
 def _require_rclone():
     rclone = shutil.which("rclone", path=TRUSTED_PATH)
     if not rclone:
-        fail("rclone is not installed — run the install script first")
+        fail("rclone is not installed — choose \"Finish setup\" in the Google Drives panel, or run install.sh")
     return rclone
 
 

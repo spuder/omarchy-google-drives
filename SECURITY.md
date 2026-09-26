@@ -25,7 +25,10 @@ notes" section and its per-round self-review entries:
 - The one privileged step is `install.sh`'s call to Omarchy's own
   `omarchy-pkg-add` (which runs `sudo pacman` internally) to install
   `rclone`/`fuse3` — this plugin never calls `sudo`, `pkexec`, or `doas`
-  directly, and has no sudoers rule of its own.
+  directly, and has no sudoers rule of its own. The panel's "Install
+  rclone" row (shown only while rclone is missing) runs that same
+  `install.sh` in a visible terminal, only when clicked, so the sudo
+  prompt is always pacman's own on a real TTY.
 
 ## Process
 
