@@ -25,10 +25,13 @@ notes" section and its per-round self-review entries:
 - The one privileged step is `install.sh`'s call to Omarchy's own
   `omarchy-pkg-add` (which runs `sudo pacman` internally) to install
   `rclone`/`fuse3` — this plugin never calls `sudo`, `pkexec`, or `doas`
-  directly, and has no sudoers rule of its own. The panel's "Install
-  rclone" row (shown only while rclone is missing) runs that same
-  `install.sh` in a visible terminal, only when clicked, so the sudo
-  prompt is always pacman's own on a real TTY.
+  directly, and has no sudoers rule of its own. Two panel actions run
+  that same `install.sh`, both only while `googledrive-status` reports
+  `setupComplete: false` (rclone, fuse3, or the systemd template
+  missing): the "Finish setup" row, and "Add a Google Drive account"
+  (which runs it before sign-in). Both open a visible floating terminal,
+  only on an explicit click or keypress, never from a background refresh,
+  so the sudo prompt is always pacman's own on a real TTY.
 
 ## Process
 

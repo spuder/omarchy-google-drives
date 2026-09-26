@@ -32,6 +32,12 @@ Item {
   // has to default to something, and false is the safe default for every
   // other use of it).
   property bool statusLoaded: false
+  // When a setup terminal (installDependencies(), or beginAddAccount()
+  // chaining install.sh) was last opened. A second one while the first is
+  // still at its sudo prompt would just fail on pacman's database lock, so
+  // repeat launches are ignored for setupRelaunchMs or until setup is done.
+  property double setupLaunchedAt: 0
+  readonly property int setupRelaunchMs: 60000
   property var accounts: []
   property string lastError: ""
   property string actionStatus: ""
@@ -288,15 +294,16 @@ Item {
   // happens here instead: if googledrive-status says anything install.sh
   // provides is missing, the same terminal runs install.sh first (its
   // pacman sudo prompt needs a real TTY anyway) and only continues to
-  // sign-in if that succeeded. The launcher joins its arguments into one
-  // `bash -c` string, which is what makes the "&&" below work; pluginDir
-  // is always ~/.config/omarchy/plugins/spuder.googledrive/, no spaces.
+  // sign-in if that succeeded (terminalCommand()'s `&&`).
   function beginAddAccount() {
     var add = [root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "add"]
-    var setup = root.setupComplete ? [] : [root.pluginDir + "install.sh", "--from-panel", "--then-sign-in", "&&"]
+    var command = root.terminalCommand(add)
+    if (!root.setupComplete) {
+      if (!root.claimSetupLaunch()) return
+      command = root.terminalCommand([root.pluginDir + "install.sh", "--from-panel", "--then-sign-in"], add)
+    }
     Quickshell.execDetached({
-      command: ["/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation"]
-        .concat(setup, add),
+      command: command,
       clearEnvironment: true,
       environment: Object.assign({}, root.desktopEnvironment, {
         GOOGLEDRIVE_MOUNT_ROOT: root.mountRoot
@@ -305,11 +312,10 @@ Item {
     delayedRefresh.restart()
   }
 
-  // One-click fix for "rclone is not installed" (issue #9). `omarchy plugin
-  // add` has no post-install hook, so nothing runs install.sh unless the
-  // user goes and finds it, and until now the panel only told them to.
-  // The panel's install row calls this instead, which opens the same kind
-  // of floating terminal as beginAddAccount() and runs install.sh in it.
+  // The "Finish setup" row (issue #9): runs install.sh without going on to
+  // add an account — for an install that broke after accounts were added
+  // (rclone removed, say), or for setting up before signing in. Opens the
+  // same kind of floating terminal as beginAddAccount() and runs it there.
   // A real terminal rather than anything silent or in-panel, for the same
   // reason Omarchy's own omarchy-install-and-launch uses one:
   // install.sh's omarchy-pkg-add runs `sudo pacman`, and that password
@@ -328,18 +334,46 @@ Item {
   // step (the widget is already enabled if its button was clicked) and
   // its "now click the G icon" closing text.
   function installDependencies() {
+    if (!root.claimSetupLaunch()) return
     Quickshell.execDetached({
-      command: [
-        "/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation",
-        root.pluginDir + "install.sh", "--from-panel"
-      ],
+      command: root.terminalCommand([root.pluginDir + "install.sh", "--from-panel"]),
       clearEnvironment: true,
       environment: root.desktopEnvironment
     })
     // No delayedRefresh here: install.sh waits on a sudo prompt and then
     // pacman, so a refresh 800ms later would only see the old state. The
     // regular refreshTimer, and Panel.qml refreshing whenever it opens,
-    // pick up the new rclone once it's installed.
+    // pick up the change once setup is complete.
+  }
+
+  // Guards both setup launches against a double click / repeat keypress
+  // (see setupLaunchedAt). Returns false, and says why in the panel, if a
+  // setup terminal was opened recently enough to still be running.
+  function claimSetupLaunch() {
+    var now = Date.now()
+    if (now - root.setupLaunchedAt < root.setupRelaunchMs) {
+      root.actionStatus = "Setup is already running in a terminal"
+      actionStatusTimer.restart()
+      return false
+    }
+    root.setupLaunchedAt = now
+    return true
+  }
+
+  // omarchy-launch-floating-terminal-with-presentation joins its arguments
+  // with spaces into one `bash -c` string, so each word is single-quoted
+  // here rather than relying on none of them ever containing a space or
+  // shell metacharacter (pluginDir comes from wherever HOME is). An
+  // optional second command runs only if the first succeeded — the one
+  // unquoted `&&` in the string, added here, never taken from an argument.
+  function shellQuote(word) {
+    return "'" + String(word).replace(/'/g, "'\\''") + "'"
+  }
+
+  function terminalCommand(first, then) {
+    var script = first.map(root.shellQuote).join(" ")
+    if (then) script += " && " + then.map(root.shellQuote).join(" ")
+    return ["/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation", script]
   }
 
   // Opens a real terminal streaming that account's mount-unit log
@@ -351,10 +385,7 @@ Item {
   function viewLogs(account) {
     if (!account) return
     Quickshell.execDetached({
-      command: [
-        "/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation",
-        root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "logs", account.id, "--follow"
-      ],
+      command: root.terminalCommand([root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "logs", account.id, "--follow"]),
       clearEnvironment: true,
       environment: root.desktopEnvironment
     })
@@ -368,10 +399,7 @@ Item {
   function reauthAccount(account) {
     if (!account) return
     Quickshell.execDetached({
-      command: [
-        "/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation",
-        root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "reauth", account.id
-      ],
+      command: root.terminalCommand([root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "reauth", account.id]),
       clearEnvironment: true,
       environment: root.desktopEnvironment
     })
