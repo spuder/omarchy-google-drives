@@ -5,7 +5,12 @@
 # first-party services (see the omarchy.* id restriction in
 # omarchy-plugin-validate). Third-party plugins install themselves.
 #
-# Usage, run once, after `omarchy plugin add <this repo> --enable`:
+# Usage: nothing to run by hand. `omarchy plugin add` has no post-install
+# hook, so the panel runs this itself (with --from-panel) the first time
+# "Add a Google Drive account" is clicked while setup is incomplete — in
+# that same floating terminal, so the sudo prompt for pacman shows up right
+# there, then hands off straight to sign-in. Running it directly still
+# works too, e.g. to repair a broken install:
 #   ~/.config/omarchy/plugins/spuder.googledrive/install.sh
 # Safe to run from anywhere: everything below is relative to this script's
 # own directory, not the caller's.
@@ -48,6 +53,12 @@ if [[ -z "${GOOGLEDRIVE_INSTALL_REEXECED:-}" ]]; then
 fi
 
 set -euo pipefail
+
+# --from-panel: launched by the plugin's own "Add account" button, so the
+# widget is already enabled (skip omarchy-plugin-enable) and sign-in follows
+# immediately in the same terminal (skip the "now click the G icon" text).
+FROM_PANEL=0
+[[ "${1:-}" == "--from-panel" ]] && FROM_PANEL=1
 
 # Named absolute paths for every command this script calls by bare name
 # otherwise, not just the ones that cross a privilege boundary — the
@@ -104,6 +115,13 @@ echo "Installing the per-account systemd user template..."
 "$INSTALL" -Dm644 systemd/omarchy-google-drive-mount@.service \
   "$HOME/.config/systemd/user/omarchy-google-drive-mount@.service"
 "$SYSTEMCTL" --user daemon-reload
+
+if (( FROM_PANEL )); then
+  echo
+  echo "Setup complete. Continuing to Google sign-in..."
+  echo
+  exit 0
+fi
 
 echo "Adding Google Drives to the bar..."
 "$OMARCHY_PLUGIN_ENABLE" spuder.googledrive

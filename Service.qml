@@ -21,6 +21,10 @@ Item {
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace("file://", "")
 
   property bool rcloneInstalled: false
+  // Whether install.sh's work (rclone, fuse3, the systemd template) is all
+  // in place — see googledrive-status. When it isn't, beginAddAccount()
+  // runs install.sh first in the same terminal.
+  property bool setupComplete: false
   property var accounts: []
   property string lastError: ""
   property string actionStatus: ""
@@ -91,7 +95,12 @@ Item {
   // the first proves the "open folder" path, the second the higher-value
   // "add account" path, which hadn't been checked when this allowlist was
   // first written.
+  // OMARCHY_PATH is pinned (same value install.sh pins) rather than passed
+  // through: omarchy-launch-floating-terminal-with-presentation runs
+  // omarchy-show-logo, which reads $OMARCHY_PATH/logo.txt — without it that
+  // resolves to /logo.txt and the terminal opens on a "No such file" error.
   readonly property var desktopEnvironment: Object.assign({}, root.minimalEnvironment, {
+    OMARCHY_PATH: "/usr/share/omarchy",
     WAYLAND_DISPLAY: null,
     XDG_CURRENT_DESKTOP: null,
     XDG_DATA_DIRS: null,
@@ -203,6 +212,7 @@ Item {
       return
     }
     rcloneInstalled = parsed.rcloneInstalled === true
+    setupComplete = parsed.setupComplete === true
     accounts = parsed.accounts
     lastError = ""
     // Reality caught up to any pending pause/resume — stop overriding.
@@ -265,12 +275,20 @@ Item {
   // rather than an in-panel form (contrast the Proton Drive plugin, which
   // *does* need a form: Proton has no OAuth hand-off, rclone's protondrive
   // backend does its own SRP login and needs the actual password).
+  //
+  // `omarchy plugin add` has no post-install hook, so first-time setup
+  // happens here instead: if googledrive-status says anything install.sh
+  // provides is missing, the same terminal runs install.sh first (its
+  // pacman sudo prompt needs a real TTY anyway) and only continues to
+  // sign-in if that succeeded. The launcher joins its arguments into one
+  // `bash -c` string, which is what makes the "&&" below work; pluginDir
+  // is always ~/.config/omarchy/plugins/spuder.googledrive/, no spaces.
   function beginAddAccount() {
+    var add = [root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "add"]
+    var setup = root.setupComplete ? [] : [root.pluginDir + "install.sh", "--from-panel", "&&"]
     Quickshell.execDetached({
-      command: [
-        "/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation",
-        root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "add"
-      ],
+      command: ["/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation"]
+        .concat(setup, add),
       clearEnvironment: true,
       environment: Object.assign({}, root.desktopEnvironment, {
         GOOGLEDRIVE_MOUNT_ROOT: root.mountRoot

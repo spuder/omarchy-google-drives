@@ -12,11 +12,15 @@ the Drive account actually is.
 
 ```bash
 omarchy plugin add https://github.com/spuder/omarchy-google-drives.git --enable
-~/.config/omarchy/plugins/spuder.googledrive/install.sh
 ```
 
-The first line clones and enables the widget; the second installs rclone,
-fuse3, and the helper scripts it needs. No manual `git clone` required.
+That's the whole install. The first time you click "Add a Google Drive
+account", the terminal it opens runs [install.sh](install.sh) itself before
+sign-in: rclone, fuse3, the systemd mount template, and the helper scripts.
+It asks for your sudo password once, for pacman. `omarchy plugin add` has no
+post-install hook, so the plugin does this on first use. If you like, you
+can still run `install.sh` by hand, before adding an account or to repair
+an install.
 
 Click "Add a Google Drive account" in the panel. That opens a terminal
 asking for the account's email, then hands off to rclone's own browser
@@ -287,7 +291,7 @@ and this repo's own pre-submission self-review process.
 ## Requirements
 
 - Omarchy with the Quickshell/Quattro shell plugin runtime
-- `rclone` and `fuse3`, installed automatically by `install.sh`
+- `rclone` and `fuse3`, installed automatically the first time you add an account
 - A file manager of your choice, and a browser for Google's OAuth sign-in
 
 ## Developing
