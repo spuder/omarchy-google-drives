@@ -23,8 +23,15 @@ Item {
   property bool rcloneInstalled: false
   // Whether install.sh's work (rclone, fuse3, the systemd template) is all
   // in place — see googledrive-status. When it isn't, beginAddAccount()
-  // runs install.sh first in the same terminal.
+  // runs install.sh first in the same terminal, and Panel.qml shows a
+  // "Finish setup" row (installDependencies()) for doing it on its own.
   property bool setupComplete: false
+  // False until the first googledrive-status result arrives, so the panel
+  // doesn't flash a "Finish setup" prompt in the moment between the
+  // shell starting and the first status check finishing (rcloneInstalled
+  // has to default to something, and false is the safe default for every
+  // other use of it).
+  property bool statusLoaded: false
   property var accounts: []
   property string lastError: ""
   property string actionStatus: ""
@@ -213,6 +220,7 @@ Item {
     }
     rcloneInstalled = parsed.rcloneInstalled === true
     setupComplete = parsed.setupComplete === true
+    statusLoaded = true
     accounts = parsed.accounts
     lastError = ""
     // Reality caught up to any pending pause/resume — stop overriding.
@@ -285,7 +293,7 @@ Item {
   // is always ~/.config/omarchy/plugins/spuder.googledrive/, no spaces.
   function beginAddAccount() {
     var add = [root.python3, "-I", root.pluginDir + "bin/googledrive-accountctl", "add"]
-    var setup = root.setupComplete ? [] : [root.pluginDir + "install.sh", "--from-panel", "&&"]
+    var setup = root.setupComplete ? [] : [root.pluginDir + "install.sh", "--from-panel", "--then-sign-in", "&&"]
     Quickshell.execDetached({
       command: ["/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation"]
         .concat(setup, add),
@@ -295,6 +303,43 @@ Item {
       })
     })
     delayedRefresh.restart()
+  }
+
+  // One-click fix for "rclone is not installed" (issue #9). `omarchy plugin
+  // add` has no post-install hook, so nothing runs install.sh unless the
+  // user goes and finds it, and until now the panel only told them to.
+  // The panel's install row calls this instead, which opens the same kind
+  // of floating terminal as beginAddAccount() and runs install.sh in it.
+  // A real terminal rather than anything silent or in-panel, for the same
+  // reason Omarchy's own omarchy-install-and-launch uses one:
+  // install.sh's omarchy-pkg-add runs `sudo pacman`, and that password
+  // prompt belongs on a TTY the user can see and answer. The alternatives
+  // are a GUI askpass or a polkit rule, and this plugin deliberately has
+  // neither (see SECURITY.md). It only ever runs on an explicit click or
+  // keypress, never on its own from a refresh: opening a sudo prompt
+  // unasked because a status check noticed something missing would be
+  // worse than the warning it replaces.
+  //
+  // install.sh is launched by absolute path and re-execs itself under
+  // `env -i` with its own pinned PATH before doing anything (see its
+  // header comment), so desktopEnvironment here only has to get the
+  // terminal on screen. It is not the environment the privileged step
+  // runs under. --from-panel skips install.sh's omarchy-plugin-enable
+  // step (the widget is already enabled if its button was clicked) and
+  // its "now click the G icon" closing text.
+  function installDependencies() {
+    Quickshell.execDetached({
+      command: [
+        "/usr/share/omarchy/bin/omarchy-launch-floating-terminal-with-presentation",
+        root.pluginDir + "install.sh", "--from-panel"
+      ],
+      clearEnvironment: true,
+      environment: root.desktopEnvironment
+    })
+    // No delayedRefresh here: install.sh waits on a sudo prompt and then
+    // pacman, so a refresh 800ms later would only see the old state. The
+    // regular refreshTimer, and Panel.qml refreshing whenever it opens,
+    // pick up the new rclone once it's installed.
   }
 
   // Opens a real terminal streaming that account's mount-unit log

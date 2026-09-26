@@ -33,14 +33,21 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color barIconColor: gdrive.aggregateState === "mounted" ? barForeground : Qt.darker(barForeground, 1.55)
+  // The "Finish setup" row (issue #9) sits above "Add account" and is a
+  // cursor stop of its own while it's visible. Keyed on setupComplete
+  // rather than rcloneInstalled so a missing fuse3 or systemd template
+  // shows it too, and gated on statusLoaded so it doesn't flash up before
+  // the first status check has actually reported anything missing.
+  readonly property bool showInstall: gdrive.statusLoaded && !gdrive.setupComplete
 
   function ensureCursor() {
+    if (focusSection === "install" && !showInstall) focusSection = "add"
     if (gdrive.accounts.length === 0) {
-      focusSection = "add"
+      if (focusSection !== "install") focusSection = "add"
       accountIndex = 0
       return
     }
-    if (focusSection !== "accounts" && focusSection !== "add") focusSection = "accounts"
+    if (focusSection !== "accounts" && focusSection !== "add" && focusSection !== "install") focusSection = "accounts"
     if (accountIndex >= gdrive.accounts.length) accountIndex = Math.max(0, gdrive.accounts.length - 1)
     if (accountIndex < 0) accountIndex = 0
   }
@@ -49,7 +56,15 @@ Panel {
     cursorActive = true
     ensureCursor()
     if (dy === 0) return
+    if (focusSection === "install") {
+      if (dy > 0) focusSection = "add"
+      return
+    }
     if (focusSection === "add") {
+      if (dy < 0 && showInstall) {
+        focusSection = "install"
+        return
+      }
       if (dy > 0 && gdrive.accounts.length > 0) {
         focusSection = "accounts"
         accountIndex = 0
@@ -67,7 +82,8 @@ Panel {
 
   function activateCursor() {
     ensureCursor()
-    if (focusSection === "add") gdrive.beginAddAccount()
+    if (focusSection === "install") gdrive.installDependencies()
+    else if (focusSection === "add") gdrive.beginAddAccount()
     else if (focusSection === "accounts") {
       var account = selectedAccount()
       if (account) gdrive.openMountFolder(account)
@@ -188,6 +204,7 @@ Panel {
       onTextKey: function(t) {
         if (t === "r" || t === "R") gdrive.refresh()
         else if (t === "a" || t === "A") gdrive.beginAddAccount()
+        else if ((t === "i" || t === "I") && root.showInstall) gdrive.installDependencies()
         else if (t === "o" || t === "O") {
           var account = root.selectedAccount()
           if (account) gdrive.openMountFolder(account)
@@ -228,15 +245,9 @@ Panel {
             }
           }
 
-          Text {
-            textFormat: Text.PlainText
-            visible: !gdrive.setupComplete
+          InstallButton {
+            visible: root.showInstall
             width: parent.width
-            text: "First-time setup: adding an account also installs rclone and fuse3 (asks for your password once)."
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
           }
 
           Text {
@@ -298,6 +309,75 @@ Panel {
             }
           }
         }
+      }
+    }
+  }
+
+  // Replaces what used to be a line telling you to run the install
+  // script with something that actually does it (issue #9):
+  // clicking, Enter on it, or 'i' opens a floating terminal running
+  // install.sh (see Service.qml's installDependencies() for why a terminal
+  // and why only on an explicit action). Same shape as AddAccountButton
+  // below, but in the urgent color, since nothing mounts until it's done.
+  component InstallButton: CursorSurface {
+    id: installButton
+
+    hasCursor: root.cursorActive && root.focusSection === "install"
+    foreground: root.foreground
+
+    implicitHeight: installRow.implicitHeight + Style.spacing.rowPaddingX
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onEntered: {
+        root.cursorActive = true
+        root.focusSection = "install"
+      }
+      onClicked: gdrive.installDependencies()
+    }
+
+    RowLayout {
+      id: installRow
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(10)
+      spacing: Style.space(8)
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+
+        Text {
+          textFormat: Text.PlainText
+          Layout.fillWidth: true
+          text: "Finish setup"
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          Layout.fillWidth: true
+          text: "Opens a terminal that installs rclone and fuse3 (asks for your password once)"
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+      }
+
+      PanelActionButton {
+        iconText: "↓"
+        foreground: root.urgent
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: gdrive.installDependencies()
       }
     }
   }

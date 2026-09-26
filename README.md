@@ -18,9 +18,10 @@ That's the whole install. The first time you click "Add a Google Drive
 account", the terminal it opens runs [install.sh](install.sh) itself before
 sign-in: rclone, fuse3, the systemd mount template, and the helper scripts.
 It asks for your sudo password once, for pacman. `omarchy plugin add` has no
-post-install hook, so the plugin does this on first use. If you like, you
-can still run `install.sh` by hand, before adding an account or to repair
-an install.
+post-install hook, so the plugin does this on first use. Until setup is
+done (or if rclone is removed later), the panel also shows a "Finish setup"
+row that runs the same script without adding an account. You can still run
+`install.sh` by hand too, e.g. to repair an install.
 
 Click "Add a Google Drive account" in the panel. That opens a terminal
 asking for the account's email, then hands off to rclone's own browser
